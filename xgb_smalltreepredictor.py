@@ -103,7 +103,7 @@ if __name__ == "__main__":
     print(f"Original number of trees: {len(trees_json)}")
     print(f"Number of trees using chosen features: {len(filtered_trees)}")
 
-    # print(filtered_trees)
+    print(f"filtered_trees: {filtered_trees}")
 
     ################### UNSURE ####################
     ###############################################
