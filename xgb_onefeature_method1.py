@@ -67,11 +67,14 @@ def get_filtered_trees(model, features_needed=None):
     for i, tree_str in enumerate(trees_json):
         tree = json.loads(tree_str)
         features_used = get_features_used(tree)
+        # print(f"Tree {i} uses features: {features_used}")
         if features_needed.issubset(features_used):
             filtered_trees[0].append((i, i + 1))
             filtered_trees[1].append(tree)
 
-    # print(f"number of original trees: {len(trees_json)}\nnumber of filtered trees: {len(filtered_trees[1])}")
+    # print(
+    #     f"number of original trees: {len(trees_json)}\nnumber of filtered trees: {len(filtered_trees[1])}"
+    # )
 
     return filtered_trees
 
@@ -89,6 +92,8 @@ def get_filtered_tree_list_ranges_from_tuple(model, features_tuple=None):
     for feature_num in features_tuple:
         feature_num += 1  # 1-indexing
         features_needed.add("x" + str(feature_num))
+
+    # print(f"features_needed: {features_needed}")
 
     return get_filtered_trees(model, features_needed)[0]
 
@@ -163,6 +168,7 @@ def predict(model, features_tuple, test_set):
     """
     # list of ranges
     range_list = get_filtered_tree_list_ranges_from_tuple(model, features_tuple)
+    # print(f"range_list: {range_list}")
     # 2D numpy array of predictions
     relevant_predictions = get_split_tree_predictions(model, test_set, range_list)
     # predicted y vector
@@ -171,59 +177,122 @@ def predict(model, features_tuple, test_set):
 
 
 if __name__ == "__main__":
+    ########################################################################################################
+    ########### TEST 2: y = b1 * x1 + b2 * x1 * x2 + b3 * x2 + b4 * x3**2 + b5 * x4 * x5 + noise ###########
+    ########################################################################################################
 
-    #####################################
-    ########### y = 10*x1 + 2 ###########
-    #####################################
-
-    ####### GENERATE DATA #######
-
-    # Generate 100 random vars sampled from normal distribution
+    # Set random seed for reproducibility
     np.random.seed(42)
-    x1 = np.random.randn(100)
-    y = 10 * x1 + 2  # true function (no noise)
 
-    # Split data into training (70%) and testing sets (30%)
-    X1 = pd.DataFrame({"x1": x1})  # create tabular format of x1
-    X1_train, X1_test, y1_train, y1_test = train_test_split(
-        X1, y, test_size=0.3, random_state=42
+    # Number of samples
+    n_samples = 100
+
+    # Coefficients
+    b1 = 10
+    b2 = 20
+    b3 = 5
+    b4 = 3
+    b5 = -7
+
+    # Generate random features
+    x1 = np.random.uniform(-5, 5, n_samples)
+    x2 = np.random.uniform(-5, 5, n_samples)
+    x3 = np.random.uniform(-5, 5, n_samples)
+    x4 = np.random.uniform(-5, 5, n_samples)
+    x5 = np.random.uniform(-5, 5, n_samples)
+
+    # Generate target variable with cross terms and noise
+    noise = np.random.normal(0, 2, n_samples)
+    y = b1 * x1 + b2 * x1 * x2 + b3 * x2 + b4 * x3**2 + b5 * x4 * x5 + noise
+
+    # Stack features into a matrix
+    X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3, "x4": x4, "x5": x5})
+
+    # Split into train and test sets
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
     )
 
-    ###### FIT XGBOOST REGRESSOR ######
-
-    # Fit XGBoost regressor with 3 trees of depth 1
-    model1 = xgb.XGBRegressor(
-        n_estimators=3,  # 3 trees
-        max_depth=2,  # depth of 1
-        learning_rate=1.0,
-        objective="reg:squarederror",
+    # Create and configure the XGBoost regressor
+    model = xgb.XGBRegressor(
+        objective="reg:squarederror",  # Standard regression objective
+        n_estimators=1000,  # Number of boosting rounds (trees)
+        learning_rate=0.1,  # Step size shrinkage
+        max_depth=5,  # Maximum tree depth
+        subsample=0.8,  # Fraction of samples per tree
+        colsample_bytree=0.8,  # Fraction of features per tree
         random_state=42,
-        base_score=0.8,
+        base_score=0.5,
     )
-    model1.fit(X1_train, y1_train)
-    # model1.save_model("model1_3trees.json")  # save model1_3tree
 
-    ####### TESTING #######
-    x1 = X1_test["x1"].values  # test input x-values
-    y_true = y1_test  # True y values
+    # Fit the model to your training data
+    model.fit(X_train, y_train)
 
-    # y value predicted from entire default tree
-    y_pred = model1.predict(X1_test, output_margin=True)
-
-    # y value predicted from summing individual trees
-    y_pred_sum = predict(model1, (0,), X1_test)
-
-    plt.xlabel("x1")
-    plt.ylabel("y")
-    plt.scatter(x1, y_true, label="True y", color="green", marker="x")
-    plt.scatter(
-        x1, y_pred, label="Default boosted tree y-prediction", color="red", marker="*"
+    # Predict on the test set
+    y_true = y
+    y_pred = model.predict(X_test)
+    y_pred_sum = predict(
+        model,
+        (0, 1, 2),
+        X_test,
     )
-    plt.scatter(
-        x1, y_pred_sum, label="Manual tree SUM y-prediction", color="pink", marker="."
-    )
-    plt.show()
 
-    print(get_filtered_tree_list_ranges_from_tuple(model1, (0,)))
+    print(f"y_pred: {y_pred}")
+    print(f"y_pred_sum: {y_pred_sum}")
 
-    print("helo")
+    # #############################################
+    # ########### TEST 1: y = 10*x1 + 2 ###########
+    # #############################################
+
+    # ####### GENERATE DATA #######
+
+    # # Generate 100 random vars sampled from normal distribution
+    # np.random.seed(42)
+    # x1 = np.random.randn(100)
+    # y = 10 * x1 + 2  # true function (no noise)
+
+    # # Split data into training (70%) and testing sets (30%)
+    # X1 = pd.DataFrame({"x1": x1})  # create tabular format of x1
+    # X1_train, X1_test, y1_train, y1_test = train_test_split(
+    #     X1, y, test_size=0.3, random_state=42
+    # )
+
+    # ###### FIT XGBOOST REGRESSOR ######
+
+    # # Fit XGBoost regressor with 3 trees of depth 1
+    # model1 = xgb.XGBRegressor(
+    #     n_estimators=3,  # 3 trees
+    #     max_depth=2,  # depth of 1
+    #     learning_rate=1.0,
+    #     objective="reg:squarederror",
+    #     random_state=42,
+    #     base_score=0.8,
+    # )
+    # model1.fit(X1_train, y1_train)
+    # # model1.save_model("model1_3trees.json")  # save model1_3tree
+
+    # ####### TESTING #######
+    # x1 = X1_test["x1"].values  # test input x-values
+    # y_true = y1_test  # True y values
+
+    # # y value predicted from entire default tree
+    # y_pred = model1.predict(X1_test, output_margin=True)
+
+    # # y value predicted from summing individual trees
+    # y_pred_sum = predict(model1, (0,), X1_test)
+
+    # plt.xlabel("x1")
+    # plt.ylabel("y")
+    # plt.scatter(x1, y_true, label="True y", color="green", marker="x")
+    # plt.scatter(
+    #     x1, y_pred, label="Default boosted tree y-prediction", color="red", marker="*"
+    # )
+    # plt.scatter(
+    #     x1, y_pred_sum, label="Manual tree SUM y-prediction", color="pink", marker="."
+    # )
+    # plt.show()
+
+    # print(f"y_pred: {y_pred}")
+    # print(f"y_pred_sum: {y_pred_sum}")
+
+    # print(get_filtered_tree_list_ranges_from_tuple(model1, (0,)))
