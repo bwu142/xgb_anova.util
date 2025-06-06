@@ -16,15 +16,57 @@ import tree_filtering
 ##### CONTOUR PLOT HELPER FUNCTIONS #####
 
 
+def plot_linear_one_var(model, equation):
+    """ """
+    # Generate x_i vectors
+    x_step = np.arange(0, 100, 0.1)  # 0.1 step, not including 100
+    x_random = np.random.uniform(0, 100, size=len(x_step))
+
+    # Pandas Dataframes
+    X_test1 = pd.DataFrame({"x1": x_step, "x2": x_random})
+    X_test2 = pd.DataFrame({"x1": x_random, "x2": x_step})
+
+    # Get predicted values
+    y_pred_x1 = tree_filtering.predict(model, (0,), X_test1)
+    y_pred_x2 = tree_filtering.predict(model, (1,), X_test2)
+
+    # Plot
+    plot = go.Figure()
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test1["x1"],
+            y=y_pred_x1,
+            mode="lines",
+            name="z_pred_x1",
+            line=dict(color="red"),  # specify color here
+        )
+    )
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test2["x2"],
+            y=y_pred_x2,
+            mode="lines",
+            name="z_pred_x2",
+            line=dict(color="blue"),  # different color here
+        )
+    )
+
+    plot.update_layout(
+        title=f"{equation}", xaxis_title="x1 / x2", yaxis_title="Predicted z"
+    )
+
+    plot.show()
+
+
 # Optional: Input -- list of variables --> generates all combinations recursively first
-def plot_contour_two_vars(model, equation):
+def plot_contour_two_vars(model, equation, start_val, stop_val, step_val):
     """
     model: XGBRegressor
     equation: string
 
-
-
-
+    Makes a contour plot specifically from predictions from f(x1x2)
     """
     x1 = np.arange(0, 100, 0.1)
     x2 = np.arange(0, 100, 0.1)
@@ -52,7 +94,11 @@ def plot_contour_two_vars(model, equation):
             y=x2,
             colorscale="sunset",
             contours=dict(
-                start=-4, end=10, size=1, coloring="heatmap", showlabels=True
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
             ),
             line=dict(width=2),
             colorbar=dict(title="Z value"),
@@ -129,11 +175,11 @@ def test_filter_two_vars_1():
         Tree depth 1
         1000 trees
     """
+    ##### GENERATE DATA #####
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
     x2 = np.random.uniform(0, 100, 1000)
     y = 10 * x1 + 2 * x2  # true function (no noise)
-
     # Split data into training (70%) and testing sets (30%)
     X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
     X_train, X_test, y_train, y_test = train_test_split(
@@ -145,7 +191,7 @@ def test_filter_two_vars_1():
     # Fit XGBoost regressor with 1000 trees of depth 1
     model = xgb.XGBRegressor(
         n_estimators=1000,  # 1000 trees
-        max_depth=2,  # depth of 1
+        max_depth=1,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
@@ -153,55 +199,8 @@ def test_filter_two_vars_1():
     )
     model.fit(X_train, y_train)
 
-    # # y value predicted from summing individual trees
-    # trees_feature_x1 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(
-    #     model, (0,)
-    # )
-    # trees_feature_x2 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(
-    #     model, (1,)
-    # )
-    # print(f"num trees_with_feature_x1: {len(trees_feature_x1)}")
-    # print(f"num trees_with_feature_x2: {len(trees_feature_x2)}")
-    # print(f"trees_with_feature_x1: {trees_feature_x1}")
-    # print(f"trees_with_feature_x2: {trees_feature_x2}")
-
-    y_true = y_test  # True y vals
-
-    # y value predicted from entire default tree
-    y_pred = model.predict(X_test, output_margin=True)
-
-    # GENERATE TEST SETS
-    x1_ver1 = np.arange(0, 100, 0.1)  # 0.1 step, not including 100
-    x2_ver1 = np.random.uniform(0, 100, size=len(x1))
-    # X_test1 = pd.DataFrame({"x1": x1, "x2": x2})
-    X_test1 = pd.DataFrame({"x1": x1_ver1, "x2": x2_ver1})
-
-    x1_ver2 = np.random.uniform(0, 100, size=len(x1))
-    x2_ver2 = np.arange(0, 100, 0.1)
-    # X_test2 = pd.DataFrame({"x1": x1, "x2": x2})
-    X_test2 = pd.DataFrame({"x1": x1_ver2, "x2": x2_ver2})
-
-    y_pred_x1 = tree_filtering.predict(model, (0,), X_test1)  # 9 trees
-    y_pred_x2 = tree_filtering.predict(model, (1,), X_test2)  # 1 tree
-
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.scatter(
-        X_test1["x1"],
-        y_pred_x1,
-        label="Default boosted tree y-prediction",
-        color="red",
-        marker="*",
-    )
-    plt.scatter(
-        X_test2["x2"],
-        y_pred_x2,
-        label="Manual tree SUM y-prediction",
-        color="pink",
-        marker=".",
-    )
-    plt.show()
-    # assert False
+    ###### PLOT ######
+    plot_linear_one_var(model, "y = 10 * x1 + 2 * x2")
 
 
 def test_filter_two_vars_2():
@@ -221,8 +220,7 @@ def test_filter_two_vars_2():
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
     x2 = np.random.uniform(0, 100, 1000)
-    intercept = 5
-    y = 10 * x1 + 2 * x2 + intercept
+    y = 10 * x1 + 2 * x2 + 5
     X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42
@@ -238,16 +236,6 @@ def test_filter_two_vars_2():
         base_score=0.5,
     )
     model.fit(X_train, y_train)
-
-    # z1 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(model, (0,))
-    # z2 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(model, (1,))
-    # z3 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(
-    #     model,
-    #     (0, 1),
-    # )
-    # print(f"num x1 trees: {len(z1)}")
-    # print(f"num x2 trees: {len(z2)}")
-    # print(f"num x1x2 trees: {len(z3)}")
 
     ##### GENERATE PREDICTIONS #####
 
@@ -353,10 +341,11 @@ def test_filter_two_vars_2():
         yaxis_title="x2",
     )
 
-    contour_plot_Z_Pred_x1.show()
-    contour_plot_Z_Pred_x2.show()
-    contour_plot_Z_Pred_x1x2.show()
-    contour_plot_Z_Pred_Default.show()
+    # contour_plot_Z_Pred_x1.show()
+    # contour_plot_Z_Pred_x2.show()
+    # contour_plot_Z_Pred_x1x2.show()
+    # contour_plot_Z_Pred_Default.show()
+    plot_contour_two_vars(model, "y = 10 * x1 + 2 * x2 + 5", -200, 200, 20)
 
 
 def test_filter_two_vars_3():
@@ -566,131 +555,111 @@ def test_filter_two_vars_4():
     )
     x2_plot.show()
 
+    ##### GENERATE PREDICTIONS #####
 
-# plt.xlabel("x")
-# plt.ylabel("y")
-# plt.scatter(
-#     X_test1["x1"],
-#     y_pred_x1,
-#     label="Default boosted tree y-prediction",
-#     color="red",
-#     marker="*",
-# )
-# plt.scatter(
-#     X_test2["x2"],
-#     y_pred_x2,
-#     label="Manual tree SUM y-prediction",
-#     color="pink",
-#     marker=".",
-# )
-# # plt.show()
-# # assert False
+    # x1 = np.arange(0, 100, 0.1)
+    # x2 = np.arange(0, 100, 0.1)
+    # X1, X2 = np.meshgrid(x1, x2)
+    # all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    # # convert all pairs to DataFrame structure
+    # X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
 
-##### GENERATE PREDICTIONS #####
+    # # get predictions
+    # z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
+    # z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
+    # z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
+    # z_pred = model.predict(X_test, output_margin=True)  # vector
 
-# x1 = np.arange(0, 100, 0.1)
-# x2 = np.arange(0, 100, 0.1)
-# X1, X2 = np.meshgrid(x1, x2)
-# all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
-# # convert all pairs to DataFrame structure
-# X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    # # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
+    # Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
+    # Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
+    # Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
+    # Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
 
-# # get predictions
-# z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
-# z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-# z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-# z_pred = model.predict(X_test, output_margin=True)  # vector
+    # ##### PLOT #####
+    # # Z_Pred_x1
+    # contour_plot_Z_Pred_x1 = go.Figure(
+    #     data=go.Contour(
+    #         z=Z_Pred_x1,
+    #         x=x1,
+    #         y=x2,
+    #         colorscale="blues",
+    #         contours=dict(
+    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
+    #         ),
+    #         line=dict(width=2),
+    #         colorbar=dict(title="Z value"),
+    #     )
+    # )
+    # contour_plot_Z_Pred_x1.update_layout(
+    #     title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
+    # )
 
-# # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-# Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
-# Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
-# Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-# Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
+    # # Z_Pred_x2
+    # contour_plot_Z_Pred_x2 = go.Figure(
+    #     data=go.Contour(
+    #         z=Z_Pred_x2,
+    #         x=x1,
+    #         y=x2,
+    #         colorscale="blues",
+    #         contours=dict(
+    #             start=0, end=1, size=0.5, coloring="heatmap", showlabels=True
+    #         ),
+    #         line=dict(width=2),
+    #         colorbar=dict(title="Z value"),
+    #     )
+    # )
 
-# ##### PLOT #####
-# # Z_Pred_x1
-# contour_plot_Z_Pred_x1 = go.Figure(
-#     data=go.Contour(
-#         z=Z_Pred_x1,
-#         x=x1,
-#         y=x2,
-#         colorscale="blues",
-#         contours=dict(
-#             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-#         ),
-#         line=dict(width=2),
-#         colorbar=dict(title="Z value"),
-#     )
-# )
-# contour_plot_Z_Pred_x1.update_layout(
-#     title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-# )
+    # contour_plot_Z_Pred_x2.update_layout(
+    #     title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
+    # )
 
-# # Z_Pred_x2
-# contour_plot_Z_Pred_x2 = go.Figure(
-#     data=go.Contour(
-#         z=Z_Pred_x2,
-#         x=x1,
-#         y=x2,
-#         colorscale="blues",
-#         contours=dict(
-#             start=0, end=1, size=0.5, coloring="heatmap", showlabels=True
-#         ),
-#         line=dict(width=2),
-#         colorbar=dict(title="Z value"),
-#     )
-# )
+    # # Z_Pred_x1x2
+    # contour_plot_Z_Pred_x1x2 = go.Figure(
+    #     data=go.Contour(
+    #         z=Z_Pred_x1x2,
+    #         x=x1,
+    #         y=x2,
+    #         colorscale="sunset",
+    #         contours=dict(
+    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
+    #         ),
+    #         line=dict(width=2),
+    #         colorbar=dict(title="Z value"),
+    #     )
+    # )
 
-# contour_plot_Z_Pred_x2.update_layout(
-#     title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-# )
+    # contour_plot_Z_Pred_x1x2.update_layout(
+    #     title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
+    #     xaxis_title="x1",
+    #     yaxis_title="x2",
+    # )
 
-# # Z_Pred_x1x2
-# contour_plot_Z_Pred_x1x2 = go.Figure(
-#     data=go.Contour(
-#         z=Z_Pred_x1x2,
-#         x=x1,
-#         y=x2,
-#         colorscale="sunset",
-#         contours=dict(
-#             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-#         ),
-#         line=dict(width=2),
-#         colorbar=dict(title="Z value"),
-#     )
-# )
+    # # # Z_Pred_Default
+    # contour_plot_Z_Pred_Default = go.Figure(
+    #     data=go.Contour(
+    #         z=Z_Pred_Default,
+    #         x=x1,
+    #         y=x2,
+    #         colorscale="Greens",
+    #         contours=dict(
+    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
+    #         ),
+    #         line=dict(width=2),
+    #         colorbar=dict(title="Z value"),
+    #     )
+    # )
 
-# contour_plot_Z_Pred_x1x2.update_layout(
-#     title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
-#     xaxis_title="x1",
-#     yaxis_title="x2",
-# )
+    # contour_plot_Z_Pred_Default.update_layout(
+    #     title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
+    #     xaxis_title="x1",
+    #     yaxis_title="x2",
+    # )
 
-# # # Z_Pred_Default
-# contour_plot_Z_Pred_Default = go.Figure(
-#     data=go.Contour(
-#         z=Z_Pred_Default,
-#         x=x1,
-#         y=x2,
-#         colorscale="Greens",
-#         contours=dict(
-#             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-#         ),
-#         line=dict(width=2),
-#         colorbar=dict(title="Z value"),
-#     )
-# )
-
-# contour_plot_Z_Pred_Default.update_layout(
-#     title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
-#     xaxis_title="x1",
-#     yaxis_title="x2",
-# )
-
-# contour_plot_Z_Pred_x1.show()
-# contour_plot_Z_Pred_x2.show()
-# contour_plot_Z_Pred_x1x2.show()
-# contour_plot_Z_Pred_Default.show()
+    # contour_plot_Z_Pred_x1.show()
+    # contour_plot_Z_Pred_x2.show()
+    # contour_plot_Z_Pred_x1x2.show()
+    # contour_plot_Z_Pred_Default.show()
 
 
 def test_filter_two_vars_5():
@@ -779,27 +748,6 @@ def test_filter_two_vars_5():
         title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
     )
 
-    # Z_Pred_x1x2
-    contour_plot_Z_Pred_x1x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1x2,
-            x=x1,
-            y=x2,
-            colorscale="sunset",
-            contours=dict(
-                start=-4, end=10, size=1, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x1x2.update_layout(
-        title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
     # Z_Pred_Default
     contour_plot_Z_Pred_Default = go.Figure(
         data=go.Contour(
@@ -823,7 +771,7 @@ def test_filter_two_vars_5():
 
     contour_plot_Z_Pred_x1.show()
     contour_plot_Z_Pred_x2.show()
-    contour_plot_Z_Pred_x1x2.show()
+    plot_contour_two_vars(model, "y = 10 * x1 + 2 * x2 + 5")
     contour_plot_Z_Pred_Default.show()
 
 
@@ -935,172 +883,3 @@ def test_filter_three_vars_1():
 
 if __name__ == "__main__":
     pass
-
-
-# contour_plot = go.Figure(
-#     data=go.Contour(
-#         z=Z3,
-#         x=x1,
-#         y=x2,
-#         colorscale="Greens",
-#         contours=dict(
-#             start=-1, end=1, size=0.2, coloring="heatmap", showlabels=True
-#         ),
-#         line=dict(width=2),
-#         colorbar=dict(title="Z value"),
-#     )
-# )
-
-# contour_plot.update_layout(
-#     title="y = 10 * x1 + 2 * x2 + 5", xaxis_title="x1", yaxis_title="x2"
-# )
-
-# contour_plot.show()
-
-##########################
-
-# total_contour = go.Figure()
-
-# total_contour.add_trace(
-#     go.Contour(
-#         z=Z1,
-#         x=x1,
-#         y=x2,
-#         colorscale="Blues",
-#         contours=dict(showlabels=True),
-#         line=dict(width=2),
-#         name="z1",
-#         showscale=False,  # Hide extra colorbar
-#     )
-# )
-
-# total_contour.add_trace(
-#     go.Contour(
-#         z=Z2,
-#         x=x1,
-#         y=x2,
-#         colorscale="Reds",
-#         contours=dict(showlabels=True),
-#         line=dict(width=2, dash="dash"),
-#         name="z2",
-#         showscale=False,  # Hide extra colorbar
-#     )
-# )
-# total_contour.add_trace(
-#     go.Contour(
-#         z=Z3,
-#         x=x1,
-#         y=x2,
-#         colorscale="Greens",
-#         contours=dict(showlabels=True),
-#         line=dict(width=2),
-#         name="z3",
-#         colorbar=dict(title="Z value"),  # Only one colorbar
-#     )
-# )
-# total_contour.show()
-
-
-####### TESTING #######
-
-# plt.xlabel("x1")
-# plt.ylabel("y")
-# plt.scatter(x1, y_true, label="True y", color="green", marker="x")
-# plt.scatter(
-#     x1, y_pred, label="Default boosted tree y-prediction", color="red", marker="*"
-# )
-# plt.scatter(
-#     x1, y_pred_sum, label="Manual tree SUM y-prediction", color="pink", marker="."
-# )
-# plt.show()
-
-# print(f"y_pred: {y_pred}")
-# print(f"y_pred_sum: {y_pred_sum}")
-
-# print(get_filtered_tree_list_ranges_from_tuple(model1, (0,)))
-
-# ########################################################################################################
-# ########### TEST 2: y = b1 * x1 + b2 * x1 * x2 + b3 * x2 + b4 * x3**2 + b5 * x4 * x5 + noise ###########
-# ########################################################################################################
-
-# # Set random seed for reproducibility
-# np.random.seed(42)
-
-# # Number of samples
-# n_samples = 100
-
-# # Coefficients
-# b1 = 10
-# b2 = 20
-# b3 = 5
-# b4 = 3
-# b5 = -7
-
-# # Generate random features
-# x1 = np.random.uniform(-5, 5, n_samples)
-# x2 = np.random.uniform(-5, 5, n_samples)
-# x3 = np.random.uniform(-5, 5, n_samples)
-# x4 = np.random.uniform(-5, 5, n_samples)
-# x5 = np.random.uniform(-5, 5, n_samples)
-
-# # Generate target variable with cross terms and noise
-# noise = np.random.normal(0, 2, n_samples)
-# y = b1 * x1 + b2 * x1 * x2 + b3 * x2 + b4 * x3**2 + b5 * x4 * x5 + noise
-
-# # Stack features into a matrix
-# X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3, "x4": x4, "x5": x5})
-
-# # Split into train and test sets
-# X_train, X_test, y_train, y_test = train_test_split(
-#     X, y, test_size=0.2, random_state=42
-# )
-
-# # Create and configure the XGBoost regressor
-# model = xgb.XGBRegressor(
-#     objective="reg:squarederror",  # Standard regression objective
-#     n_estimators=1000,  # Number of boosting rounds (trees)
-#     learning_rate=0.1,  # Step size shrinkage
-#     max_depth=5,  # Maximum tree depth
-#     subsample=0.8,  # Fraction of samples per tree
-#     colsample_bytree=0.8,  # Fraction of features per tree
-#     random_state=42,
-#     base_score=0.5,
-# )
-
-# # Fit the model to your training data
-# model.fit(X_train, y_train)
-
-# # Predict on the test set
-# y_true = y
-# y_pred = model.predict(X_test)
-# y_pred_sum = predict(
-#     model,
-#     (0, 1, 2),
-#     X_test,
-# )
-
-# print(f"y_pred: {y_pred}")
-# print(f"y_pred_sum: {y_pred_sum}")
-
-
-########## OLD ONEFEATURE_METHOD1 STUFF ##########
-# predictions = get_all_split_tree_predictions(model1, X1_test)
-# y_pred_sum = sum_split_tree_predictions(model1, predictions)
-
-
-# model1_t1 = model1.predict(X1_test, iteration_range=(0, 1), output_margin=False)
-# model1_t2 = model1.predict(X1_test, iteration_range=(1, 2), output_margin=False)
-# model1_t3 = model1.predict(X1_test, iteration_range=(2, 3), output_margin=False)
-# y_tree1 = np.array(model1_t1)
-# print(y_tree1)
-# y_tree2 = np.array(model1_t2)
-# y_tree3 = np.array(model1_t3)
-# y1_sum = y_tree1 + y_tree2 + y_tree3 - 2 * bias
-# print(y1_sum[:10])
-# print(y1_3[:10])
-# bias = get_bias(model1)
-
-# EACH INDIVIDUAL TREE (INCLUDES BIAS EACH TIME):
-# plt.scatter(x1, y_tree1, label="tree 1 predicted y", color="blue", marker=".")
-# plt.scatter(x1, y_tree2, label="tree 2 predicted y", color="brown", marker=".")
-# plt.scatter(x1, y_tree3, label="tree 3 predicted y", color="purple", marker=".")
