@@ -193,13 +193,9 @@ def predict_sum_of_all_trees(model, test_set):
 
 
 if __name__ == "__main__":
-    ##################################################
-    ########### TEST 1: y = 10*x1 + 2 * x2 ###########
-    ##################################################
 
     ####### GENERATE DATA #######
-
-    # Generate 100- random vars sampled from uniform distribution
+    # Generate 1000 random vars sampled from uniform distribution
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
     x2 = np.random.uniform(0, 100, 1000)
@@ -212,10 +208,8 @@ if __name__ == "__main__":
     )
 
     ###### FIT XGBOOST REGRESSOR ######
-
-    # Fit XGBoost regressor with 10 trees of depth 1
     model = xgb.XGBRegressor(
-        n_estimators=1000,  # 10 trees
+        n_estimators=1000,  # 1000 trees
         max_depth=1,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
@@ -223,49 +217,16 @@ if __name__ == "__main__":
         base_score=0.8,
     )
     model.fit(X_train, y_train)
-
-    ### OVERTIME WHOP WHOP ###
+    model.save_model("model_example.json")
 
     y_true = y_test  # True y vals
-
     # y value predicted from entire default tree
     y_pred = model.predict(X_test, output_margin=True)
+    y_pred_x1 = predict(model, (0,), X_test)
+    y_pred_x1 = predict(model, (1,), X_test)
 
     # y value predicted from summing individual trees
     trees_feature_x1 = get_filtered_tree_list_ranges_from_tuple(model, (0,))
     trees_feature_x2 = get_filtered_tree_list_ranges_from_tuple(model, (1,))
-    print(f"trees_with_feature_x1: {trees_feature_x1}")
-    print(f"trees_with_feature_x2: {trees_feature_x2}")
-
-    # GENERATE TEST SETS
-    x1_ver1 = np.arange(0, 100.1, 0.1)  # 0.1 step, includes 100
-    x2_ver1 = np.random.uniform(0, 100, size=len(x1))
-    X_test1 = pd.DataFrame({"x1": x1, "x2": x2})
-
-    x1_ver2 = np.random.uniform(0, 100, size=len(x1))
-    x2_ver2 = np.arange(0, 100.1, 0.1)
-    X_test2 = pd.DataFrame({"x1": x1, "x2": x2})
-
-    y_pred_x1 = predict(model, (0,), X_test1)
-    y_pred_x2 = predict(model, (1,), X_test2)
-
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.scatter(
-        X_test1["x1"],
-        y_pred_x1,
-        label="Default boosted tree y-prediction",
-        color="red",
-        marker="*",
-    )
-    plt.scatter(
-        X_test2["x2"],
-        y_pred_x2,
-        label="Manual tree SUM y-prediction",
-        color="pink",
-        marker=".",
-    )
-    plt.show()
-
-    # r2 = r2_score(y_true, y_pred)
-    # print(f"r2_score: {r2}")
+    # print(f"trees_with_feature_x1: {trees_feature_x1}")
+    # print(f"trees_with_feature_x2: {trees_feature_x2}")
