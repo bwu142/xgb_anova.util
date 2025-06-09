@@ -186,9 +186,9 @@ def predict_sum_of_all_trees(model, test_set):
     test_set: Pandas dataframe
 
     Returns: prediction (1D numpy vector) by summing all individual trees in model and accounting for bias
+        kind of pointless, because we don't generate combinations of combined terms like f(x1x2)
     """
     all_features = tuple(feature_num for feature_num in range(test_set.shape[1]))
-    print(all_features)
     return predict(model, all_features, test_set)
 
 

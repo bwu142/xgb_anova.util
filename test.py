@@ -17,7 +17,9 @@ import tree_filtering
 
 
 def plot_linear_one_var(model, equation):
-    """ """
+    """
+    Makes scatterplot containing z vs. x1 and z vs. x2
+    """
     # Generate x_i vectors
     x_step = np.arange(0, 100, 0.1)  # 0.1 step, not including 100
     x_random = np.random.uniform(0, 100, size=len(x_step))
@@ -54,20 +56,17 @@ def plot_linear_one_var(model, equation):
     )
 
     plot.update_layout(
-        title=f"{equation}", xaxis_title="x1 / x2", yaxis_title="Predicted z"
+        title=f"{equation}", xaxis_title="x1, x2", yaxis_title="Predicted z"
     )
 
     plot.show()
 
 
-# Optional: Input -- list of variables --> generates all combinations recursively first
-def plot_contour_two_vars(model, equation, start_val, stop_val, step_val):
+def plot_contour_one_var(model, equation, start_val, stop_val, step_val):
     """
-    model: XGBRegressor
-    equation: string
-
-    Makes a contour plot specifically from predictions from f(x1x2)
+    Generates two contour plots using predictions from f(x1), f(x2) respectively
     """
+    # Generate all combinations of pairs (x1, x2) from 0 too 100 in .1 increments
     x1 = np.arange(0, 100, 0.1)
     x2 = np.arange(0, 100, 0.1)
     X1, X2 = np.meshgrid(x1, x2)
@@ -77,14 +76,87 @@ def plot_contour_two_vars(model, equation, start_val, stop_val, step_val):
     # get predictions
     z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
     z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    z_pred = model.predict(X_test, output_margin=True)  # vector
 
     # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
     Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
     Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
+
+    # Z_Pred_x1
+    contour_plot_Z_Pred_x1 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x1,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+
+    contour_plot_Z_Pred_x1.update_layout(
+        title=f"Z_Pred_x1: {equation}",
+        xaxis_title="x1",
+        yaxis_title="x2",
+    )
+
+    contour_plot_Z_Pred_x1.show()
+
+    # Z_Pred_x1
+    contour_plot_Z_Pred_x2 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x2,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+
+    contour_plot_Z_Pred_x2.update_layout(
+        title=f"Z_Pred_x2: {equation}",
+        xaxis_title="x1",
+        yaxis_title="x2",
+    )
+
+    contour_plot_Z_Pred_x2.show()
+
+
+def plot_contour_two_vars(model, equation, start_val, stop_val, step_val):
+    """
+    model: XGBRegressor
+    equation: string
+
+    Generates one contour plot using prediction from f(x1x2)
+
+
+    """
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    # convert all pairs to DataFrame structure
+    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    # get predictions
+    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
+    z_pred = model.predict(X_test, output_margin=True)  # vector
+
+    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
     Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-    Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
 
     # Z_Pred_x1x2
     contour_plot_Z_Pred_x1x2 = go.Figure(
@@ -142,10 +214,7 @@ def test_additivity_one_tree():
     )
     model.fit(X_train, y_train)
 
-    x = X_test["x1"].values  # test input x-values
-    y_true = y_test  # True y values
     # y values predicted from entire default tree
-    print(X_test)
     y_pred = model.predict(X_test, output_margin=True)
     y_pred_sum = tree_filtering.predict_sum_of_all_trees(model, X_test)
 
@@ -153,18 +222,48 @@ def test_additivity_one_tree():
     # print(f"y_pred_sum: {y_pred_sum}")
     assert np.allclose(np.round(y_pred, 3), np.round(y_pred_sum, 3))
 
-    # # PLOT
-    # plt.scatter(x, y_true, label="True y", color="green", marker="o")
-    # plt.scatter(
-    #     x, y_pred, label="Default boosted tree y-prediction", color="blue", marker="."
-    # )
-    # plt.scatter(
-    #     x, y_pred_sum, label="Manual tree sum y-prediction", color="red", marker="."
-    # )
-    # plt.xlabel("x1")
-    # plt.ylabel("y")
-    # plt.legend()
-    # plt.show()
+
+def test_additivity_1(model):
+    """
+    model: XGB regressor model
+    num_trees: string resembling equation we are fitting
+
+    Returns True if adding up the predictions from each component (multiple predict functions) equals the original prediction
+
+    """
+    # Generate all combinations of pairs (x1, x2) from 0 too 100 in .1 increments
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    # convert all pairs to DataFrame structure
+    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    # get predictions
+    z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
+    z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
+    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
+
+    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
+    bias = tree_filtering.get_bias(model)
+
+    z_pred_sum = (
+        z_pred_x1 + z_pred_x2 + z_pred_x1x2 - 2 * bias
+    )  # QUESTION ABOUT THIS (IS THIS OK??)
+    z_pred = model.predict(X_test, output_margin=True)
+    print(f"z_pred_sum{np.round(z_pred_sum[900:], 3)}")
+    print(f"z_pred{np.round(z_pred[900:], 3)}")
+    assert np.allclose(
+        np.round(z_pred, 3), np.round(z_pred_sum, 3), atol=0.1
+    ), "TEST_ADDITIVITY_1 FAILED"
+
+
+def test_filter_numerical_1(model):
+    """returns True if z value doesn't change when x1 held constant (for f(x1))
+    returns True if z value doesn't change when x2 held constant (for f(x2))
+
+    Not sure if necessary if we have the contour plots
+    """
+    pass
 
 
 ###### TREE FILTER TESTS #####
@@ -216,7 +315,7 @@ def test_filter_two_vars_2():
         nm x2 trees: 96
         num x1x2 trees: 755
     """
-    # Generate Data
+    ##### GENERATE DATA #####
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
     x2 = np.random.uniform(0, 100, 1000)
@@ -226,7 +325,7 @@ def test_filter_two_vars_2():
         X, y, test_size=0.3, random_state=42
     )
 
-    # Fit Regressor
+    ##### FIT REGRESSOR #####
     model = xgb.XGBRegressor(
         n_estimators=1000,  # 1000 trees
         max_depth=2,  # max_depth of 2
@@ -237,115 +336,18 @@ def test_filter_two_vars_2():
     )
     model.fit(X_train, y_train)
 
-    ##### GENERATE PREDICTIONS #####
-
-    # Make DataFrame with all combinations of pairs (x1, x2), each var from [0, 100) by .1 increments
-    x1 = np.arange(0, 100, 0.1)  # make x1 vals
-    x2 = np.arange(0, 100, 0.1)  # x2 vals
-    # both shape (len(x1) * len(x1)) --> to generate all pairs
-    X1, X2 = np.meshgrid(x1, x2)
-    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])  # generate all pairs
-    # convert all pairs to DataFrame structure
-    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
-
-    # get prediction
-    z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
-    z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    z_pred_Default = model.predict(X_test, output_margin=True)  # vector
-
-    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-    Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
-    Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
-    Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-    Z_Pred_Default = z_pred_Default.reshape(len(x2), len(x1))
+    # TESTS
+    test_additivity_1(model)
 
     ##### PLOT #####
+    # test_additivity_2(model)
 
-    # Z_Pred_x1
-    contour_plot_Z_Pred_x1 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=0, end=1200, size=50, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-    contour_plot_Z_Pred_x1.update_layout(
-        title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
+    # z_pred_x1, z_pred_x2
+    plot_linear_one_var(model, "z = 10 * x1 + 2 * x2 + 5")
+    plot_contour_one_var(model, "z = 10 * x1 + 2 * x2 + 5", -200, 200, 20)
 
-    # Z_Pred_x2
-    contour_plot_Z_Pred_x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x2,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=-50, end=50, size=5, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x2.update_layout(
-        title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
-
-    # Z_Pred_x1x2
-    contour_plot_Z_Pred_x1x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1x2,
-            x=x1,
-            y=x2,
-            colorscale="sunset",
-            contours=dict(
-                start=-200, end=200, size=25, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x1x2.update_layout(
-        title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
-    # # Z_Pred_Default
-    contour_plot_Z_Pred_Default = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_Default,
-            x=x1,
-            y=x2,
-            colorscale="Greens",
-            contours=dict(
-                start=0, end=1200, size=50, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_Default.update_layout(
-        title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
-    # contour_plot_Z_Pred_x1.show()
-    # contour_plot_Z_Pred_x2.show()
-    # contour_plot_Z_Pred_x1x2.show()
-    # contour_plot_Z_Pred_Default.show()
-    plot_contour_two_vars(model, "y = 10 * x1 + 2 * x2 + 5", -200, 200, 20)
+    # z_pred_x1x2
+    plot_contour_two_vars(model, "z = 10 * x1 + 2 * x2 + 5", -200, 200, 20)
 
 
 def test_filter_two_vars_3():
@@ -374,117 +376,21 @@ def test_filter_two_vars_3():
     )
     model.fit(X_train, y_train)
 
+    # TESTS
+    test_additivity_1(model)
+
     ##### GENERATE PREDICTIONS #####
+    plot_linear_one_var(model, "y = 10x1 + 5x1x2 + 3")
+    plot_contour_one_var(model, "z = 10 * x1 + 2 * x2 + 5", -200, 200, 20)
 
-    x1 = np.arange(0, 100, 0.1)
-    x2 = np.arange(0, 100, 0.1)
-    X1, X2 = np.meshgrid(x1, x2)
-    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
-    # convert all pairs to DataFrame structure
-    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
-
-    # get predictions
-    z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
-    z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    z_pred = model.predict(X_test, output_margin=True)  # vector
-
-    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-    Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
-    Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
-    Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-    Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
-
-    ##### PLOT #####
-    # Z_Pred_x1
-    contour_plot_Z_Pred_x1 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=-3000, end=3000, size=250, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-    contour_plot_Z_Pred_x1.update_layout(
-        title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
-
-    # Z_Pred_x2
-    contour_plot_Z_Pred_x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x2,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=-3000, end=3000, size=250, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x2.update_layout(
-        title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
-
-    # Z_Pred_x1x2
-    contour_plot_Z_Pred_x1x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1x2,
-            x=x1,
-            y=x2,
-            colorscale="sunset",
-            contours=dict(
-                start=-5000, end=55000, size=5000, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x1x2.update_layout(
-        title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
-    # # Z_Pred_Default
-    contour_plot_Z_Pred_Default = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_Default,
-            x=x1,
-            y=x2,
-            colorscale="Greens",
-            contours=dict(
-                start=-5000, end=55000, size=5000, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_Default.update_layout(
-        title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
-    contour_plot_Z_Pred_x1.show()
-    contour_plot_Z_Pred_x2.show()
-    contour_plot_Z_Pred_x1x2.show()
-    contour_plot_Z_Pred_Default.show()
+    plot_contour_two_vars(model, "y = 10x1 + 5x1x2 + 3", -5000, 55000, 5000)
 
 
 def test_filter_two_vars_4():
     """
     y = 10 * x1 + 5 * x1 * x2 + 3
         WITH CORRELATION BETWEEN x1/x2
+    Unsure about plots but i'll take it for now.
     """
     ##### GENERATE DATA #####
     np.random.seed(42)
@@ -501,8 +407,8 @@ def test_filter_two_vars_4():
     # Generate correlated normal data
     x1, x2 = np.random.multivariate_normal(mean, cov, 1000).T
 
-    # Compute y using your equation
-    y = 10 * x1 + 2 * x2 + 3
+    # True y-val
+    y = 10 * x1 + 5 * x1 * x2 + 3
 
     # Prepare DataFrame and split
     X = pd.DataFrame({"x1": x1, "x2": x2})
@@ -513,161 +419,94 @@ def test_filter_two_vars_4():
     ##### FIT REGRESSOR #####
     model = xgb.XGBRegressor(
         n_estimators=1000,
-        max_depth=1,
+        max_depth=2,  # 1
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
         base_score=0.8,
     )
     model.fit(X_train, y_train)
-    # print(tree_filtering.get_bias(model))
 
-    # trees_json = model.get_booster().get_dump(dump_format="json")
-    # print(trees_json)
+    ##### TESTS #####
+    test_additivity_1(model)
 
-    #### 2D LINES #####
-    x1_ver1 = np.arange(-3, 3, 0.01)  # 0.1 step, not including 100
-    x2_ver1 = np.random.uniform(0, len(x1_ver1), size=len(x1))
-    # X_test1 = pd.DataFrame({"x1": x1, "x2": x2})
-    X_test1 = pd.DataFrame({"x1": x1_ver1, "x2": x2_ver1})
+    ##### PLOTTING #####
+    # For x1 effect: vary x1, randomize x2 (from correlated normal)
+    x1_step = np.linspace(x1.min(), x1.max(), 500)
+    x2_random = np.random.choice(x2, size=len(x1_step), replace=True)
+    X_test1 = pd.DataFrame({"x1": x1_step, "x2": x2_random})
 
-    x1_ver2 = np.random.uniform(0, 100, size=len(x1))
-    x2_ver2 = np.arange(0, 100, 0.1)
-    # X_test2 = pd.DataFrame({"x1": x1, "x2": x2})
-    X_test2 = pd.DataFrame({"x1": x2_ver1, "x2": x1_ver1})
+    # For x2 effect: vary x2, randomize x1 (from correlated normal)
+    x2_step = np.linspace(x2.min(), x2.max(), 500)
+    x1_random = np.random.choice(x1, size=len(x2_step), replace=True)
+    X_test2 = pd.DataFrame({"x1": x1_random, "x2": x2_step})
 
+    # Assuming you have a trained model and tree_filtering.predict
     z_pred_x1 = tree_filtering.predict(model, (0,), X_test1)
     z_pred_x2 = tree_filtering.predict(model, (1,), X_test2)
 
-    x1_plot = px.scatter(
-        x=X_test1["x1"],
-        y=z_pred_x1,
-        title="Predicted z vs x1",
-        labels={"x": "x", "y": "Predicted z"},
+    plot = go.Figure()
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test1["x1"],
+            y=z_pred_x1,
+            mode="markers",
+            name="z_pred_x1",
+            marker=dict(color="red"),
+        )
     )
-    x1_plot.show()
 
-    x2_plot = px.scatter(
-        x=X_test1["x2"],
-        y=z_pred_x2,
-        title="Predicted z vs x2",
-        labels={"x": "x", "y": "Predicted z"},
+    plot.add_trace(
+        go.Scatter(
+            x=X_test2["x2"],
+            y=z_pred_x2,
+            mode="markers",
+            name="z_pred_x2",
+            marker=dict(color="blue"),
+        )
     )
-    x2_plot.show()
 
-    ##### GENERATE PREDICTIONS #####
+    plot.update_layout(
+        title="Predicted z vs x1 and x2 (Correlated Normals)",
+        xaxis_title="x1 or x2",
+        yaxis_title="Predicted z",
+    )
+    plot.show()
+    plot_contour_two_vars(model, "y = 10x1 + 5x1x2 + 5", 0, 50, 10)
 
-    # x1 = np.arange(0, 100, 0.1)
-    # x2 = np.arange(0, 100, 0.1)
-    # X1, X2 = np.meshgrid(x1, x2)
-    # all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
-    # # convert all pairs to DataFrame structure
-    # X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    # #### PLOT 2D LINES #####
+    # x_ver1 = np.arange(0, 100, 0.01)  # 0.1 step, not including 100
+    # x_ver2 = np.random.uniform(0, len(x_ver1), size=len(x_ver1))
+    # # X_test1 = pd.DataFrame({"x1": x1, "x2": x2})
+    # X_test1 = pd.DataFrame({"x1": x_ver1, "x2": x_ver2})
+    # # X_test2 = pd.DataFrame({"x1": x1, "x2": x2})
+    # X_test2 = pd.DataFrame({"x1": x_ver2, "x2": x_ver1})
+    # # o
+    # z_pred_x1 = tree_filtering.predict(model, (0,), X_test1)
+    # z_pred_x2 = tree_filtering.predict(model, (1,), X_test2)
 
-    # # get predictions
-    # z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
-    # z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    # z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    # z_pred = model.predict(X_test, output_margin=True)  # vector
-
-    # # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-    # Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
-    # Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
-    # Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-    # Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
-
-    # ##### PLOT #####
-    # # Z_Pred_x1
-    # contour_plot_Z_Pred_x1 = go.Figure(
-    #     data=go.Contour(
-    #         z=Z_Pred_x1,
-    #         x=x1,
-    #         y=x2,
-    #         colorscale="blues",
-    #         contours=dict(
-    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-    #         ),
-    #         line=dict(width=2),
-    #         colorbar=dict(title="Z value"),
-    #     )
+    # x1_plot = px.scatter(
+    #     x=X_test1["x1"],
+    #     y=z_pred_x1,
+    #     title="Predicted z vs x1",
+    #     labels={"x": "x", "y": "Predicted z"},
     # )
-    # contour_plot_Z_Pred_x1.update_layout(
-    #     title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    # )
+    # x1_plot.show()
 
-    # # Z_Pred_x2
-    # contour_plot_Z_Pred_x2 = go.Figure(
-    #     data=go.Contour(
-    #         z=Z_Pred_x2,
-    #         x=x1,
-    #         y=x2,
-    #         colorscale="blues",
-    #         contours=dict(
-    #             start=0, end=1, size=0.5, coloring="heatmap", showlabels=True
-    #         ),
-    #         line=dict(width=2),
-    #         colorbar=dict(title="Z value"),
-    #     )
+    # x2_plot = px.scatter(
+    #     x=X_test1["x2"],
+    #     y=z_pred_x2,
+    #     title="Predicted z vs x2",
+    #     labels={"x": "x", "y": "Predicted z"},
     # )
-
-    # contour_plot_Z_Pred_x2.update_layout(
-    #     title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    # )
-
-    # # Z_Pred_x1x2
-    # contour_plot_Z_Pred_x1x2 = go.Figure(
-    #     data=go.Contour(
-    #         z=Z_Pred_x1x2,
-    #         x=x1,
-    #         y=x2,
-    #         colorscale="sunset",
-    #         contours=dict(
-    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-    #         ),
-    #         line=dict(width=2),
-    #         colorbar=dict(title="Z value"),
-    #     )
-    # )
-
-    # contour_plot_Z_Pred_x1x2.update_layout(
-    #     title="Z_Pred_x1x2: y = 10 * x1 + 2 * x2 + 5 ",
-    #     xaxis_title="x1",
-    #     yaxis_title="x2",
-    # )
-
-    # # # Z_Pred_Default
-    # contour_plot_Z_Pred_Default = go.Figure(
-    #     data=go.Contour(
-    #         z=Z_Pred_Default,
-    #         x=x1,
-    #         y=x2,
-    #         colorscale="Greens",
-    #         contours=dict(
-    #             start=0, end=100, size=5, coloring="heatmap", showlabels=True
-    #         ),
-    #         line=dict(width=2),
-    #         colorbar=dict(title="Z value"),
-    #     )
-    # )
-
-    # contour_plot_Z_Pred_Default.update_layout(
-    #     title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
-    #     xaxis_title="x1",
-    #     yaxis_title="x2",
-    # )
-
-    # contour_plot_Z_Pred_x1.show()
-    # contour_plot_Z_Pred_x2.show()
-    # contour_plot_Z_Pred_x1x2.show()
-    # contour_plot_Z_Pred_Default.show()
+    # x2_plot.show()
 
 
 def test_filter_two_vars_5():
     """
     y = log(x1 * x2)
         1000 Trees --- depth 2
-
-
     """
     ##### Generate Data #####
     np.random.seed(42)
@@ -690,91 +529,17 @@ def test_filter_two_vars_5():
     )
     model.fit(X_train, y_train)
 
-    ##### GENERATE PREDICTIONS #####
-    x1 = np.arange(0, 100, 0.1)
-    x2 = np.arange(0, 100, 0.1)
-    X1, X2 = np.meshgrid(x1, x2)
-    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
-    # convert all pairs to DataFrame structure
-    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    # TESTS
+    test_additivity_1(model)
 
-    # get predictions
-    z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
-    z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    z_pred = model.predict(X_test, output_margin=True)  # vector
+    ##### GENERATE PREDICTIONS AND PLOT #####
+    plot_linear_one_var(model, "y = log(x1 * x2)")
+    plot_contour_one_var(model, "y = log(x1 * x2)", -10, 10, 2)
 
-    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-    Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
-    Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
-    Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
-    Z_Pred_Default = z_pred.reshape(len(x2), len(x1))
-
-    ##### PLOT #####
-    # Z_Pred_x1
-    contour_plot_Z_Pred_x1 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x1,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=0, end=1, size=0.1, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-    contour_plot_Z_Pred_x1.update_layout(
-        title="Z_Pred_x1: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
-
-    # Z_Pred_x2
-    contour_plot_Z_Pred_x2 = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_x2,
-            x=x1,
-            y=x2,
-            colorscale="blues",
-            contours=dict(
-                start=-2, end=2, size=0.25, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_x2.update_layout(
-        title="Z_Pred_x2: y = 10 * x1 + 2 * x2 + 5 ", xaxis_title="x1", yaxis_title="x2"
-    )
-
-    # Z_Pred_Default
-    contour_plot_Z_Pred_Default = go.Figure(
-        data=go.Contour(
-            z=Z_Pred_Default,
-            x=x1,
-            y=x2,
-            colorscale="Greens",
-            contours=dict(
-                start=-2, end=10, size=2, coloring="heatmap", showlabels=True
-            ),
-            line=dict(width=2),
-            colorbar=dict(title="Z value"),
-        )
-    )
-
-    contour_plot_Z_Pred_Default.update_layout(
-        title="Z_Pred_Default: y = 10 * x1 + 2 * x2 + 5 ",
-        xaxis_title="x1",
-        yaxis_title="x2",
-    )
-
-    contour_plot_Z_Pred_x1.show()
-    contour_plot_Z_Pred_x2.show()
-    plot_contour_two_vars(model, "y = 10 * x1 + 2 * x2 + 5")
-    contour_plot_Z_Pred_Default.show()
+    plot_contour_two_vars(model, "y = log(x1 * x2)", -6, 10, 2)
 
 
+# Not worrying about for now (assuming 2D works)
 def test_filter_three_vars_1():
     """
     y = 10x1 + 8x2 + 7x3 + 2x1x2 + 9x1x3 + 3
@@ -801,6 +566,8 @@ def test_filter_three_vars_1():
         base_score=0.5,
     )
     model.fit(X_train, y_train)
+
+    return True
 
     ##### GENERATE PREDICTIONS #####
     # For visualization, use a smaller grid to avoid memory issues
