@@ -192,6 +192,48 @@ def predict_sum_of_all_trees(model, test_set):
     return predict(model, all_features, test_set)
 
 
+##### LOAD/SAVE REGRESSOR FUNCTIONS #####
+def save_filtered_trees(model, ranges, json):
+    """
+    model: xgb regressor (model = xgb.XGBRegressor())
+    ranges: list of ranges (representing the trees we care about)
+        Output of get_filtered_tree_list_ranges_from_tuple
+
+    Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
+        Does this by editing the xgboost json
+    """
+    # Load in json file
+    with open("formatted_model_3trees.json", "r") as file:
+        data = json.load(file)
+    # Get list of indices of relevant trees
+    tree_indices = []
+    for rng in ranges:
+        tree_indices.append(rng[0])
+    # Edit num_trees
+    data["learner"]["gradient_booster"]["model"]["gbtree_model_param"]["num_trees"] = (
+        str(len(tree_indices))
+    )
+    # Edit iteration_indptr
+    data["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
+        i for i in range(len(tree_indices))
+    ]
+    # Edit tree_info
+    data["learner"]["gradient_booster"]["model"]["tree_info"] = [
+        0 for _ in range(len(tree_indices))
+    ]
+
+    # Edit trees
+    # trees = data["learner"]["gradient_booster"]["model"]["trees"]
+    new_trees = []
+    for i in tree_indices:
+        new_trees.append(data["learner"]["gradient_booster"]["model"]["trees"][i])
+    data["learner"]["gradient_booster"]["model"]["trees"] = new_trees
+
+    # Save new model
+    with open("filtered_model.json", "w") as file:
+        json.dump(data, file)
+
+
 if __name__ == "__main__":
 
     ####### GENERATE DATA #######

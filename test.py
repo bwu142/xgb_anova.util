@@ -650,3 +650,10 @@ def test_filter_three_vars_1():
 
 if __name__ == "__main__":
     pass
+
+# target - x = difference
+# target - y = target - x
+# x = y
+# nums[i] + nums[j] == target
+# target - nums[i] == nums[j]
+# target - x = y
