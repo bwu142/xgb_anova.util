@@ -219,7 +219,7 @@ def save_filtered_trees(model, ranges, json):
     ] = str(len(tree_indices))
     # Edit iteration_indptr
     original_model["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
-        i for i in range(len(tree_indices))
+        i for i in range(len(tree_indices) + 1)
     ]
     # Edit tree_info
     original_model["learner"]["gradient_booster"]["model"]["tree_info"] = [
@@ -257,15 +257,15 @@ if __name__ == "__main__":
 
     ###### FIT XGBOOST REGRESSOR ######
     model = xgb.XGBRegressor(
-        n_estimators=1000,  # 1000 trees
-        max_depth=1,  # depth of 1
+        n_estimators=1,  # 1000 trees
+        max_depth=2,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
         base_score=0.8,
     )
     model.fit(X_train, y_train)
-    model.save_model("model_example.json")
+    model.save_model("model_example_1_trees_d2.json")
 
     y_true = y_test  # True y vals
     # y value predicted from entire default tree
