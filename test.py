@@ -648,6 +648,93 @@ def test_filter_three_vars_1():
     pred.show()
 
 
+###### TREE SAVING TESTS ######
+
+# model for these tests
+# Generate 1000 random vars sampled from uniform distribution
+np.random.seed(42)
+x1 = np.random.uniform(0, 100, 1000)
+x2 = np.random.uniform(0, 100, 1000)
+y = 10 * x1 + 2 * x2 + 5  # true function (no noise)
+
+# Split data into training (70%) and testing sets (30%)
+X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42
+)
+
+###### FIT XGBOOST REGRESSOR ######
+test_filter_and_save_model = xgb.XGBRegressor(
+    n_estimators=1000,  # 1000 trees
+    max_depth=2,  # depth of 1
+    learning_rate=1.0,
+    objective="reg:squarederror",
+    random_state=42,
+    base_score=0.8,
+)
+test_filter_and_save_model.fit(X_train, y_train)
+
+
+def test_filter_and_save_1():
+    """
+    y = 10 * x1 + 2 * x2
+        1000 trees
+        depth 1
+    check if summing trees with x1 and trees with x2  (accounting for bias) is equivalent to original prediction model
+    """
+    pass
+
+
+def test_filter_and_save_2():
+    """
+    y = 10 * x1 + 2 * x2 + 5
+        1000 trees
+        depth 2
+    check if prediction from each term f(x1), f(x2), f(x1x2) (on the saved file) equals the prediction from our original filters using "iteration_range"
+    """
+    model = generate_filter_and_save_model
+
+    ###### ITERATION_RANGE METHOD ######
+
+    ###### FILTER_AND_SAVE METHOD ######
+    bias = tree_filtering.get_bias(model)
+    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x1", (0,))
+    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x2", (1,))
+    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x1x2", (0, 1))
+
+    tree_filtering.filter_save_load(
+        model,
+        [
+            "test_filter_and_save_2_x1.json",
+            "test_filter_and_save_2_x2.json",
+            "test_filter_and_save_2_x1x2.json",
+        ],
+        [
+            "filter_and_save_model_x1",
+            "filter_and_save_model_x2",
+            "filter_and_save_model_x1x2",
+        ],
+        [(0,), (1,), (0, 1)],
+    )
+
+    total_prediction_filter_and_save = (
+        filter_and_save_model_x1.predict(X_test)
+        + filter_and_save_model_x2.predict(X_test)
+        + filter_and_save_model_x1x2.predict(X_test)
+    )
+
+
+def test_filter_and_save_3():
+    """
+    test filtering of two_vars: y = 10 * x1 + 2 * x2
+        No intercept
+        Tree depth 1
+        1000 trees
+    by graphing (like test_filter_two_vars_1 but using this saving method)
+    """
+    pass
+
+
 if __name__ == "__main__":
     pass
 

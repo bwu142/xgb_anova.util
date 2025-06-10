@@ -9,6 +9,7 @@ import xgboost as xgb
 import matplotlib.pyplot as plt
 import json
 import plotly.express as px
+import os
 
 
 ###### TREE HELPER FUNCTIONS ######
@@ -164,8 +165,8 @@ def sum_split_tree_predictions(model, predictions):
 def predict(model, features_tuple, test_set):
     """
     model: xgb regressor (model = xgb.XGBRegressor())
-    ranges: list of ranges of relevant trees (output of get_filtered_tree_list_tuple_ranges)
-    test_set: Pandas dataframe
+    features_tuple: tuple of features --> e.g. (0, 1) would be only trees with x1x2
+        Assuming "containing x1x2" means there's a split on x1 followed by split on x2 or vice versa
 
 
     Returns: prediction (1D numpy array) using relevant trees in 'ranges' from model
@@ -193,15 +194,21 @@ def predict_sum_of_all_trees(model, test_set):
 
 
 ##### LOAD/SAVE REGRESSOR FUNCTIONS #####
-def save_filtered_trees(model, ranges, json):
+def save_filtered_trees(model, ranges, output_name):
     """
     model: xgb regressor (model = xgb.XGBRegressor())
     ranges: list of ranges (representing the trees we care about)
         Output of get_filtered_tree_list_ranges_from_tuple
+    name: "name of output file"
 
     Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
         Does this by editing the originally saved xgboost json file
+    Also saves original model in the process as original_model.json
     """
+    # Sanity check
+    if not output_name.endswith(".json"):
+        output_name += ".json"
+
     # save model as json file
     model.save_model("original_model.json")
 
@@ -229,15 +236,57 @@ def save_filtered_trees(model, ranges, json):
     # Edit trees
     # trees = data["learner"]["gradient_booster"]["model"]["trees"]
     new_trees = []
+    id_count = 0
     for i in tree_indices:
         new_trees.append(
             original_model["learner"]["gradient_booster"]["model"]["trees"][i]
         )
+        new_trees[id_count]["id"] = id_count
+        id_count += 1
     original_model["learner"]["gradient_booster"]["model"]["trees"] = new_trees
 
     # Save new model as filtered_model.json
-    with open("filtered_model.json", "w") as file:
+    with open(str(output_name), "w") as file:
         json.dump(original_model, file)
+
+
+def filter_and_save(model, output_name, features_tuple=None):
+    """
+    model: xgb regressor (model = xgb.XGBRegressor())
+    output_name (string): name we want to save the file as (ends with .json)
+    features_tuple: tuple of features --> e.g. (0, 1) would be only trees with x1x2
+        Assuming "containing x1x2" means there's a split on x1 followed by split on x2 or vice versa
+
+    Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
+        Does this by editing the originally saved xgboost json file
+    """
+    ranges = get_filtered_tree_list_ranges_from_tuple(model, features_tuple)
+    save_filtered_trees(model, ranges, output_name)
+
+
+def filter_save_load(
+    model, output_file_names, output_model_names, features_tuple_list=None
+):
+    """
+    model: xgb regressor (model = xgb.XGBRegressor())
+    output_file_names (list of strings): names we want to save the file as (ends with .json)
+        MUST BE IN CORRESPONDING ORDER WITH FEATURES_TUPLE
+    features_tuple_list: list of tuples of features --> e.g. [(0,), (0, 1)] would be trees with x1 (for first file) and trees with x1x2 (for second file)
+        Assuming "containing x1x2" means there's a split on x1 followed by split on x2 or vice versa
+
+
+    saves original model in json format as "original_model.json"
+    saves filtered models json files in features_tuple
+    loads filtered models into corresponding vars with corresponding output_model_names
+    """
+    for i in range(len(output_model_names)):
+        output_file_name = output_file_names[i]
+        output_model_name = output_model_names[i]
+        features_tuple = features_tuple_list[i]
+
+        filter_and_save(model, output_file_name, features_tuple)
+        output_model_name = xgb.XGBRegressor()
+        output_model_name.load_model(output_file_name)
 
 
 if __name__ == "__main__":
@@ -257,15 +306,15 @@ if __name__ == "__main__":
 
     ###### FIT XGBOOST REGRESSOR ######
     model = xgb.XGBRegressor(
-        n_estimators=1,  # 1000 trees
-        max_depth=2,  # depth of 1
+        n_estimators=10,  # 1000 trees
+        max_depth=1,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
         base_score=0.8,
     )
     model.fit(X_train, y_train)
-    model.save_model("model_example_1_trees_d2.json")
+    # model.save_model("model_example_1_trees_d2.json")
 
     y_true = y_test  # True y vals
     # y value predicted from entire default tree
@@ -276,5 +325,20 @@ if __name__ == "__main__":
     # y value predicted from summing individual trees
     trees_feature_x1 = get_filtered_tree_list_ranges_from_tuple(model, (0,))
     trees_feature_x2 = get_filtered_tree_list_ranges_from_tuple(model, (1,))
-    # print(f"trees_with_feature_x1: {trees_feature_x1}")
-    # print(f"trees_with_feature_x2: {trees_feature_x2}")
+    print(f"trees_with_feature_x1: {trees_feature_x1}")
+    print(f"trees_with_feature_x2: {trees_feature_x2}")
+
+    ##### TESTING FILTER_AND_SAVE #####
+
+    # "reasonability" check
+    filter_and_save(model, "test_model_10_trees_x1", (0,))
+    filter_and_save(model, "test_model_10_trees_x2", (1,))
+    assert os.path.exists("test_model_10_trees_x2.json"), "File not created!"
+
+    # prediction check
+    new_model = xgb.XGBRegressor()
+    new_model.load_model("test_model_10_trees_x2.json")
+    new_model.load_model("test_model_10_trees_x1.json")
+
+    # After saving
+    print(new_model.predict(X_test))
