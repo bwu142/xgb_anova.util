@@ -666,7 +666,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 ###### FIT XGBOOST REGRESSOR ######
 test_filter_and_save_model = xgb.XGBRegressor(
     n_estimators=1000,  # 1000 trees
-    max_depth=2,  # depth of 1
+    max_depth=2,  # depth of 2
     learning_rate=1.0,
     objective="reg:squarederror",
     random_state=42,
@@ -681,29 +681,19 @@ def test_filter_and_save_1():
         1000 trees
         depth 1
     check if summing trees with x1 and trees with x2  (accounting for bias) is equivalent to original prediction model
+        ADDITIVITY TEST: Returns True if adding up the predictions from each component (multiple predict functions) equals the original prediction
     """
-    pass
-
-
-def test_filter_and_save_2():
-    """
-    y = 10 * x1 + 2 * x2 + 5
-        1000 trees
-        depth 2
-    check if prediction from each term f(x1), f(x2), f(x1x2) (on the saved file) equals the prediction from our original filters using "iteration_range"
-    """
-    model = generate_filter_and_save_model
-
-    ###### ITERATION_RANGE METHOD ######
+    # Generate all combinations of pairs (x1, x2) from 0 too 100 in .1 increments
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    # convert all pairs to DataFrame structure
+    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
 
     ###### FILTER_AND_SAVE METHOD ######
-    bias = tree_filtering.get_bias(model)
-    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x1", (0,))
-    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x2", (1,))
-    tree_filtering.filter_and_save(model, "test_filter_and_save_2_x1x2", (0, 1))
-
-    tree_filtering.filter_save_load(
-        model,
+    output_models = tree_filtering.filter_save_load(
+        test_filter_and_save_model,
         [
             "test_filter_and_save_2_x1.json",
             "test_filter_and_save_2_x2.json",
@@ -717,10 +707,64 @@ def test_filter_and_save_2():
         [(0,), (1,), (0, 1)],
     )
 
-    total_prediction_filter_and_save = (
-        filter_and_save_model_x1.predict(X_test)
-        + filter_and_save_model_x2.predict(X_test)
-        + filter_and_save_model_x1x2.predict(X_test)
+    bias = tree_filtering.get_bias(test_filter_and_save_model)
+
+    z_pred_sum_filter_and_save = -2 * bias
+    for model in output_models:
+        z_pred_sum_filter_and_save += model.predict(X_test, output_margin=True)
+
+    ###### BUILT IN METHOD ######
+    z_pred = test_filter_and_save_model.predict(X_test, output_margin=True)
+
+    ###### EQUALITY TEST ######
+    assert np.allclose(
+        np.round(z_pred, 3), np.round(z_pred_sum_filter_and_save, 3), atol=0.1
+    )
+
+
+def test_filter_and_save_2():
+    """
+    y = 10 * x1 + 2 * x2 + 5
+        1000 trees
+        depth 2
+    check if prediction from each term f(x1), f(x2), f(x1x2) (on the saved file) equals the prediction from our original filters using "iteration_range"
+        EQUALITY TEST
+    """
+    bias = tree_filtering.get_bias(test_filter_and_save_model)
+
+    ###### ITERATION_RANGE METHOD ######
+    z_pred_x1 = tree_filtering.predict(test_filter_and_save_model, (0,), X_test)
+    z_pred_x2 = tree_filtering.predict(test_filter_and_save_model, (1,), X_test)
+    z_pred_x1x2 = tree_filtering.predict(test_filter_and_save_model, (0, 1), X_test)
+    z_pred_sum_iteration_range = z_pred_x1 + z_pred_x2 + z_pred_x1x2 - 2 * bias
+
+    ###### FILTER_AND_SAVE METHOD ######
+    output_models = tree_filtering.filter_save_load(
+        test_filter_and_save_model,
+        [
+            "test_filter_and_save_2_x1.json",
+            "test_filter_and_save_2_x2.json",
+            "test_filter_and_save_2_x1x2.json",
+        ],
+        [
+            "filter_and_save_model_x1",
+            "filter_and_save_model_x2",
+            "filter_and_save_model_x1x2",
+        ],
+        [(0,), (1,), (0, 1)],
+    )
+
+    z_pred_sum_filter_and_save = -2 * bias
+    for model in output_models:
+        z_pred_sum_filter_and_save += model.predict(X_test, output_margin=True)
+
+    # print(f"z_pred_sum_iteration_range: {z_pred_sum_iteration_range[:10]}")
+    # print(f"z_pred_sum_filter_and_save: {z_pred_sum_filter_and_save[:10]}")
+
+    assert np.allclose(
+        np.round(z_pred_sum_iteration_range, 3),
+        np.round(z_pred_sum_filter_and_save, 3),
+        atol=0.1,
     )
 
 
@@ -732,7 +776,178 @@ def test_filter_and_save_3():
         1000 trees
     by graphing (like test_filter_two_vars_1 but using this saving method)
     """
-    pass
+    ##### GENERATE DATA AND FIT REGRESSOR #####
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    x2 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2 * x2  # true function (no noise)
+    # Split data into training (70%) and testing sets (30%)
+    X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # Fit XGBoost regressor with 1000 trees of depth 1
+    model = xgb.XGBRegressor(
+        n_estimators=1000,  # 1000 trees
+        max_depth=2,  # depth of 2
+        learning_rate=1.0,
+        objective="reg:squarederror",
+        random_state=42,
+        base_score=0.8,
+    )
+    model.fit(X_train, y_train)
+
+    ###### 2D PLOT ######
+    # Generate x_i vectors
+    x_step = np.arange(0, 100, 0.1)  # 0.1 step, not including 100
+    x_random = np.random.uniform(0, 100, size=len(x_step))
+
+    # Pandas Dataframes
+    X_test1 = pd.DataFrame({"x1": x_step, "x2": x_random})
+    X_test2 = pd.DataFrame({"x1": x_random, "x2": x_step})
+
+    # Get predicted values
+    individual_models = tree_filtering.filter_save_load(
+        model,
+        [
+            "test_filter_and_save_3_x1.json",
+            "test_filter_and_save_3_x2.json",
+            "test_filter_and_save_3_x1x2.json",
+        ],
+        ["filter_and_save_3_x1", "filter_and_save_3_x2", "filter_and_save_3_x1x2"],
+        [(0,), (1,), (0, 1)],
+    )
+
+    z_pred_x1 = individual_models[0].predict(X_test1)
+    z_pred_x2 = individual_models[1].predict(X_test2)
+
+    plot = go.Figure()
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test1["x1"],
+            y=z_pred_x1,
+            mode="lines",
+            name="z_pred_x1",
+            line=dict(color="red"),  # specify color here
+        )
+    )
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test2["x2"],
+            y=z_pred_x2,
+            mode="lines",
+            name="z_pred_x2",
+            line=dict(color="blue"),  # different color here
+        )
+    )
+
+    plot.update_layout(
+        title=f"y = 10 * x1 + 2 * x2", xaxis_title="x1, x2", yaxis_title="Predicted z"
+    )
+
+    plot.show()
+
+    ###### CONTOUR PLOT ######
+
+    # Generate all combinations of pairs (x1, x2) from 0 too 100 in .1 increments
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    # convert all pairs to DataFrame structure
+    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+
+    z_pred_x1 = individual_models[0].predict(X_test)
+    z_pred_x2 = individual_models[1].predict(X_test)
+    z_pred_x1x2 = individual_models[2].predict(X_test)
+
+    Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
+    Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
+    Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
+
+    # Z_Pred_x1
+    contour_plot_Z_Pred_x1 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x1,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=0,
+                end=1000,
+                size=10,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+
+    contour_plot_Z_Pred_x1.update_layout(
+        title=f"Z_Pred_x1: y = 10 * x1 + 2 * x2",
+        xaxis_title="x1",
+        yaxis_title="x2",
+    )
+
+    contour_plot_Z_Pred_x1.show()
+
+    # Z_Pred_x12
+    contour_plot_Z_Pred_x2 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x2,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=0,
+                end=100,
+                size=10,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+
+    contour_plot_Z_Pred_x2.update_layout(
+        title=f"Z_Pred_x2: y = 10 * x1 + 2 * x2",
+        xaxis_title="x1",
+        yaxis_title="x2",
+    )
+
+    contour_plot_Z_Pred_x2.show()
+
+    # Z_Pred_x1x2
+    contour_plot_Z_Pred_x1x2 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x1x2,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=-200,
+                end=200,
+                size=25,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+
+    contour_plot_Z_Pred_x1x2.update_layout(
+        title=f"Z_Pred_x1x2: y = 10 * x1 + 2 * x2",
+        xaxis_title="x1",
+        yaxis_title="x2",
+    )
+
+    contour_plot_Z_Pred_x1x2.show()
 
 
 if __name__ == "__main__":

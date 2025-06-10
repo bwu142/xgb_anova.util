@@ -279,6 +279,7 @@ def filter_save_load(
     saves filtered models json files in features_tuple
     loads filtered models into corresponding vars with corresponding output_model_names
     """
+    output_models = []
     for i in range(len(output_model_names)):
         output_file_name = output_file_names[i]
         output_model_name = output_model_names[i]
@@ -287,6 +288,9 @@ def filter_save_load(
         filter_and_save(model, output_file_name, features_tuple)
         output_model_name = xgb.XGBRegressor()
         output_model_name.load_model(output_file_name)
+        output_models.append(output_model_name)
+
+    return output_models
 
 
 if __name__ == "__main__":
@@ -330,15 +334,15 @@ if __name__ == "__main__":
 
     ##### TESTING FILTER_AND_SAVE #####
 
-    # "reasonability" check
-    filter_and_save(model, "test_model_10_trees_x1", (0,))
-    filter_and_save(model, "test_model_10_trees_x2", (1,))
-    assert os.path.exists("test_model_10_trees_x2.json"), "File not created!"
+    # # "reasonability" check
+    # filter_and_save(model, "test_model_10_trees_x1", (0,))
+    # filter_and_save(model, "test_model_10_trees_x2", (1,))
+    # assert os.path.exists("test_model_10_trees_x2.json"), "File not created!"
 
-    # prediction check
-    new_model = xgb.XGBRegressor()
-    new_model.load_model("test_model_10_trees_x2.json")
-    new_model.load_model("test_model_10_trees_x1.json")
+    # # prediction check
+    # new_model = xgb.XGBRegressor()
+    # new_model.load_model("test_model_10_trees_x2.json")
+    # new_model.load_model("test_model_10_trees_x1.json")
 
-    # After saving
-    print(new_model.predict(X_test))
+    # # After saving
+    # print(new_model.predict(X_test))
