@@ -200,25 +200,29 @@ def save_filtered_trees(model, ranges, json):
         Output of get_filtered_tree_list_ranges_from_tuple
 
     Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
-        Does this by editing the xgboost json
+        Does this by editing the originally saved xgboost json file
     """
+    # save model as json file
+    model.save_model("original_model.json")
+
     # Load in json file
-    with open("formatted_model_3trees.json", "r") as file:
-        data = json.load(file)
+    with open("original_model.json", "r") as file:
+        original_model = json.load(file)
+
     # Get list of indices of relevant trees
     tree_indices = []
     for rng in ranges:
         tree_indices.append(rng[0])
     # Edit num_trees
-    data["learner"]["gradient_booster"]["model"]["gbtree_model_param"]["num_trees"] = (
-        str(len(tree_indices))
-    )
+    original_model["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
+        "num_trees"
+    ] = str(len(tree_indices))
     # Edit iteration_indptr
-    data["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
+    original_model["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
         i for i in range(len(tree_indices))
     ]
     # Edit tree_info
-    data["learner"]["gradient_booster"]["model"]["tree_info"] = [
+    original_model["learner"]["gradient_booster"]["model"]["tree_info"] = [
         0 for _ in range(len(tree_indices))
     ]
 
@@ -226,12 +230,14 @@ def save_filtered_trees(model, ranges, json):
     # trees = data["learner"]["gradient_booster"]["model"]["trees"]
     new_trees = []
     for i in tree_indices:
-        new_trees.append(data["learner"]["gradient_booster"]["model"]["trees"][i])
-    data["learner"]["gradient_booster"]["model"]["trees"] = new_trees
+        new_trees.append(
+            original_model["learner"]["gradient_booster"]["model"]["trees"][i]
+        )
+    original_model["learner"]["gradient_booster"]["model"]["trees"] = new_trees
 
-    # Save new model
+    # Save new model as filtered_model.json
     with open("filtered_model.json", "w") as file:
-        json.dump(data, file)
+        json.dump(original_model, file)
 
 
 if __name__ == "__main__":
