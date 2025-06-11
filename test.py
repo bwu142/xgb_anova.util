@@ -663,7 +663,7 @@ X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.3, random_state=42
 )
 
-###### FIT XGBOOST REGRESSOR ######
+# Fit XGboost regressor
 test_filter_and_save_model = xgb.XGBRegressor(
     n_estimators=1000,  # 1000 trees
     max_depth=2,  # depth of 2
@@ -948,6 +948,63 @@ def test_filter_and_save_3():
     )
 
     contour_plot_Z_Pred_x1x2.show()
+
+
+##### RANDOM GENERATORS #####
+def general_generator():
+    ####### GENERATE DATA #######
+    # Generate 1000 random vars sampled from uniform distribution
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    x2 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2 * x2  # true function (no noise)
+
+    # Split data into training (70%) and testing sets (30%)
+    X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    ###### FIT XGBOOST REGRESSOR ######
+    model = xgb.XGBRegressor(
+        n_estimators=10,  # 1000 trees
+        max_depth=1,  # depth of 1
+        learning_rate=1.0,
+        objective="reg:squarederror",
+        random_state=42,
+        base_score=0.8,
+    )
+    model.fit(X_train, y_train)
+    # model.save_model("model_example_1_trees_d2.json")
+
+    y_true = y_test  # True y vals
+    # y value predicted from entire default tree
+    y_pred = model.predict(X_test, output_margin=True)
+    y_pred_x1 = tree_filtering.predict(model, (0,), X_test)
+    y_pred_x1 = tree_filtering.predict(model, (1,), X_test)
+
+    # y value predicted from summing individual trees
+    trees_feature_x1 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(
+        model, (0,)
+    )
+    trees_feature_x2 = tree_filtering.get_filtered_tree_list_ranges_from_tuple(
+        model, (1,)
+    )
+    print(f"trees_with_feature_x1: {trees_feature_x1}")
+    print(f"trees_with_feature_x2: {trees_feature_x2}")
+
+    # # "reasonability" check
+    # filter_and_save(model, "test_model_10_trees_x1", (0,))
+    # filter_and_save(model, "test_model_10_trees_x2", (1,))
+    # assert os.path.exists("test_model_10_trees_x2.json"), "File not created!"
+
+    # # prediction check
+    # new_model = xgb.XGBRegressor()
+    # new_model.load_model("test_model_10_trees_x2.json")
+    # new_model.load_model("test_model_10_trees_x1.json")
+
+    # # After saving
+    # print(new_model.predict(X_test))
 
 
 if __name__ == "__main__":

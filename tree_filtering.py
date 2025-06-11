@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import json
 import plotly.express as px
 import os
+import plotly.graph_objects as go
 
 
 ###### TREE HELPER FUNCTIONS ######
@@ -18,6 +19,31 @@ def get_bias(model):
     if bias is not None:
         return float(bias)
     return float(model.base_score)  # Fallback
+
+
+def get_tree_leaf_indices(model_file, tree_index):
+    """
+    model_file: editable xgboost regressor file
+        with open("model_file.json", "r") as f:
+            model_file = json.load(f)
+    tree_index: index of the tree we want to get the leaf indices of
+        0-indexing
+
+    returns a list of the leaf indices in the file
+    """
+    # lists of children
+    tree = model_file["learner"]["gradient_booster"]["model"]["trees"][tree_index]
+    left_children = tree["left_children"]
+    right_children = tree["right_children"]
+    # get leaf indices (index = -1 for left and right children)
+    leaf_indices = [
+        i
+        for i, (left_child_val, right_child_val) in enumerate(
+            zip(left_children, right_children)
+        )
+        if left_child_val == -1 and right_child_val == -1
+    ]
+    return leaf_indices
 
 
 def get_all_tree_list(model):
@@ -194,32 +220,26 @@ def predict_sum_of_all_trees(model, test_set):
 
 
 ##### LOAD/SAVE REGRESSOR FUNCTIONS #####
-def save_filtered_trees(model, ranges, output_name):
+def save_filtered_trees_indices(model, tree_indices, output_name):
     """
     model: xgb regressor (model = xgb.XGBRegressor())
-    ranges: list of ranges (representing the trees we care about)
-        Output of get_filtered_tree_list_ranges_from_tuple
+    tree_indices: list of indices that we to keep
     name: "name of output file"
 
-    Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
+    Saves a json file (that is the original regressor containing the trees specified by 'tree_indices' & corresponding parameters)
         Does this by editing the originally saved xgboost json file
     Also saves original model in the process as original_model.json
     """
     # Sanity check
     if not output_name.endswith(".json"):
         output_name += ".json"
-
     # save model as json file
     model.save_model("original_model.json")
 
-    # Load in json file
+    # Load in json file into Python Dictionary for editing purposes (manipulate json file directly)
     with open("original_model.json", "r") as file:
         original_model = json.load(file)
 
-    # Get list of indices of relevant trees
-    tree_indices = []
-    for rng in ranges:
-        tree_indices.append(rng[0])
     # Edit num_trees
     original_model["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
         "num_trees"
@@ -233,7 +253,6 @@ def save_filtered_trees(model, ranges, output_name):
         0 for _ in range(len(tree_indices))
     ]
 
-    # Edit trees
     # trees = data["learner"]["gradient_booster"]["model"]["trees"]
     new_trees = []
     id_count = 0
@@ -245,9 +264,26 @@ def save_filtered_trees(model, ranges, output_name):
         id_count += 1
     original_model["learner"]["gradient_booster"]["model"]["trees"] = new_trees
 
-    # Save new model as filtered_model.json
+    # Write modified dictinoary new model to json file as output_name.json
     with open(str(output_name), "w") as file:
         json.dump(original_model, file)
+
+
+def save_filtered_trees(model, ranges, output_name):
+    """
+    model: xgb regressor (model = xgb.XGBRegressor())
+    ranges: list of ranges (representing the trees we care about)
+        Output of get_filtered_tree_list_ranges_from_tuple
+    name: "name of output file"
+
+    Saves a json file (that is the original regressor minus the irrelevant trees & corresponding parameters)
+        Does this by editing the originally saved xgboost json file
+    Also saves original model in the process as original_model.json
+    """
+    tree_indices = []
+    for rng in ranges:
+        tree_indices.append(rng[0])
+    save_filtered_trees_indices(model, tree_indices, output_name)
 
 
 def filter_and_save(model, output_name, features_tuple=None):
@@ -293,56 +329,109 @@ def filter_save_load(
     return output_models
 
 
-if __name__ == "__main__":
+def save_new_trees_indices(model_file_name, tree_indices, leaf_vals, output_name):
+    """
+    model_file_name: name of xgb regressor json file(model = xgb.XGBRegressor())
+        e.g. "model_tree_1.json"
+    tree_indices: list of indices that we to keep
+    leaf_vals: values we want to assign the leaves of the tree to
+    name: "name of output file"
 
-    ####### GENERATE DATA #######
-    # Generate 1000 random vars sampled from uniform distribution
+    Saves a new xgboost regressor model containing all the original trees, plus a new tree with leaf vals indicated by leaf_vals
+    """
+    # Open file and assign file object to f
+    # Read contents of file as json object and store in model_file variable
+    # Converts json structure into Python data structure
+    with open(model_file_name) as f:
+        model_file = json.load(f)
+
+
+if __name__ == "__main__":
+    ########################
+    ##### INITIALIZING #####
+    ########################
+
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
-    x2 = np.random.uniform(0, 100, 1000)
-    y = 10 * x1 + 2 * x2  # true function (no noise)
+    # x1 = np.arange(0, 100, 0.1)
+    y = 10 * x1 + 2
 
-    # Split data into training (70%) and testing sets (30%)
-    X = pd.DataFrame({"x1": x1, "x2": x2})  # create tabular format of x1, x2
+    X = pd.DataFrame({"x1": x1})
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42
     )
 
-    ###### FIT XGBOOST REGRESSOR ######
     model = xgb.XGBRegressor(
-        n_estimators=10,  # 1000 trees
-        max_depth=1,  # depth of 1
+        n_estimators=100,  # 100 trees
+        max_depth=1,  # depth of 2
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
         base_score=0.8,
     )
     model.fit(X_train, y_train)
-    # model.save_model("model_example_1_trees_d2.json")
 
-    y_true = y_test  # True y vals
-    # y value predicted from entire default tree
-    y_pred = model.predict(X_test, output_margin=True)
-    y_pred_x1 = predict(model, (0,), X_test)
-    y_pred_x1 = predict(model, (1,), X_test)
+    #####################
+    ##### CENTERING #####
+    #####################
 
-    # y value predicted from summing individual trees
-    trees_feature_x1 = get_filtered_tree_list_ranges_from_tuple(model, (0,))
-    trees_feature_x2 = get_filtered_tree_list_ranges_from_tuple(model, (1,))
-    print(f"trees_with_feature_x1: {trees_feature_x1}")
-    print(f"trees_with_feature_x2: {trees_feature_x2}")
+    # Get mean of output
+    y_pred = model.predict(X_test)
+    mean_pred = np.mean(y_pred)
+    # Get one tree ("unsure_1.json" file contains model with first tree)
+    save_filtered_trees_indices(model, [0], "model_tree_1.json")
+    # load model with first tree for editing
+    with open("model_tree_1.json", "r") as f:
+        model_tree_1 = json.load(f)
+    # lists of children
+    tree = model_tree_1["learner"]["gradient_booster"]["model"]["trees"][0]
+    left_children = tree["left_children"]
+    right_children = tree["right_children"]
+    # get leaf indices (index = -1 for left and right children)
+    leaf_indices = [
+        i
+        for i, (left_child_val, right_child_val) in enumerate(
+            zip(left_children, right_children)
+        )
+        if left_child_val == -1 and right_child_val == -1
+    ]
+    # subtract mean from leaf values of that one tree
+    for i in leaf_indices:
+        tree["base_weights"][i] = float(tree["base_weights"][i] - mean_pred)
+    # save modified model to json file
+    with open("model_tree_1_centered.json", "w") as f:
+        json.dump(model_tree_1, f)
 
-    ##### TESTING FILTER_AND_SAVE #####
+    ####################
+    ##### PLOTTING #####
+    ####################
+    x_step = np.arange(0, 100, 0.1)
+    X_test = pd.DataFrame({"x1": x_step})
 
-    # # "reasonability" check
-    # filter_and_save(model, "test_model_10_trees_x1", (0,))
-    # filter_and_save(model, "test_model_10_trees_x2", (1,))
-    # assert os.path.exists("test_model_10_trees_x2.json"), "File not created!"
+    model_tree_1_centered = xgb.XGBRegressor()
+    model_tree_1_centered.load_model("model_tree_1_centered.json")
+    z_pred_model_tree_1_centered = model_tree_1_centered.predict(X_test)
+    z_pred = model.predict(X_test)
 
-    # # prediction check
-    # new_model = xgb.XGBRegressor()
-    # new_model.load_model("test_model_10_trees_x2.json")
-    # new_model.load_model("test_model_10_trees_x1.json")
+    plot = go.Figure()
 
-    # # After saving
-    # print(new_model.predict(X_test))
+    plot.add_trace(
+        go.Scatter(
+            x=X_test["x1"],
+            y=z_pred_model_tree_1_centered,
+            mode="lines",
+            name="z_pred_model_tree_1_centered: y = 10 * x1 + 2",
+            line=dict(color="red"),
+        )
+    )
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test["x1"],
+            y=z_pred,
+            mode="lines",
+            name="z_pred: y = 10 * x1 + 2",
+            line=dict(color="blue"),
+        )
+    )
+    plot.show()
