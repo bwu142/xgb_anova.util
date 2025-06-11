@@ -329,21 +329,100 @@ def filter_save_load(
     return output_models
 
 
-def save_new_trees_indices(model_file_name, tree_indices, leaf_vals, output_name):
+def create_new_tree_depth_1_two_vars(leaf_val, id):
     """
-    model_file_name: name of xgb regressor json file(model = xgb.XGBRegressor())
-        e.g. "model_tree_1.json"
+    returns a new tree (dictionary) in the format of the loaded json file
+        i.e. returns something that looks like model_file in:
+            with open(model_file_name) as f:
+                model_file = json.load(f)
+    """
+    leaf_val = float(leaf_val)
+    new_tree = {
+        "base_weights": [597.23035, leaf_val, leaf_val],
+        "categories": [],
+        "categories_nodes": [],
+        "categories_segments": [],
+        "categories_sizes": [],
+        "default_left": [0, 0, 0],
+        "id": id,
+        "left_children": [1, -1, -1],
+        "loss_changes": [45755536.0, 0.0, 0.0],
+        "parents": [2147483647, 0, 0],
+        "right_children": [2, -1, -1],
+        "split_conditions": [49.26181, 333.42834, 846.18335],
+        "split_indices": [0, 0, 0],
+        "split_type": [0, 0, 0],
+        "sum_hessian": [700.0, 341.0, 359.0],
+        "tree_param": {
+            "num_deleted": "0",
+            "num_feature": "2",
+            "num_nodes": "3",
+            "size_leaf_vector": "1",
+        },
+    }
+    return new_tree
+
+
+def save_new_trees_indices_depth_1_two_vars(model, leaf_val, output_name):
+    """
+    model: name of xgb regressor
     tree_indices: list of indices that we to keep
     leaf_vals: values we want to assign the leaves of the tree to
     name: "name of output file"
 
     Saves a new xgboost regressor model containing all the original trees, plus a new tree with leaf vals indicated by leaf_vals
     """
+    # Sanity check
+    if not output_name.endswith(".json"):
+        output_name += ".json"
+    # Save model as json file
+    model.save_model("original_model.json")
+
     # Open file and assign file object to f
     # Read contents of file as json object and store in model_file variable
     # Converts json structure into Python data structure
-    with open(model_file_name) as f:
-        model_file = json.load(f)
+    with open("original_model.json", "r") as f:
+        original_model_file = json.load(f)
+
+    # Add Tree
+    original_num_trees = int(
+        original_model_file["learner"]["gradient_booster"]["model"][
+            "gbtree_model_param"
+        ]["num_trees"]
+    )
+    additional_tree = create_new_tree_depth_1_two_vars(leaf_val, original_num_trees)
+    original_model_file["learner"]["gradient_booster"]["model"]["trees"].append(
+        additional_tree
+    )
+
+    # Edit other file parameters
+    original_model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
+        "num_trees"
+    ] = str(original_num_trees + 1)
+    original_model_file["learner"]["gradient_booster"]["model"][
+        "iteration_indptr"
+    ].append(original_num_trees + 1)
+    original_model_file["learner"]["gradient_booster"]["model"]["tree_info"].append(0)
+
+    # Write modified dictinoary new model to json file as output_name.json
+    with open(str(output_name), "w") as file:
+        json.dump(original_model_file, file)
+
+
+def save_new_trees_indices_two_vars(
+    model_file_name, tree_indices, leaf_vals, depth_val, output_name
+):
+    """
+    tree_param.num_nodes: 7 for depth 2, 3 for depth 1
+    base_weights: list of 7 values, not 3
+    split_conditions: 7 vals
+    sum_hessian: 7 vals
+    loss_changes: 7 vals
+    left_children: 7 vals
+    right_children: 7 vals
+    parents: 7 vals
+    """
+    pass
 
 
 if __name__ == "__main__":
@@ -362,8 +441,8 @@ if __name__ == "__main__":
     )
 
     model = xgb.XGBRegressor(
-        n_estimators=100,  # 100 trees
-        max_depth=1,  # depth of 2
+        n_estimators=1,  # 100 trees
+        max_depth=1,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
         random_state=42,
@@ -371,67 +450,41 @@ if __name__ == "__main__":
     )
     model.fit(X_train, y_train)
 
+    ###############################
+    ##### TEST SAVE_NEW_TREES #####
+    ###############################
+    # save_new_trees_indices_depth_1_two_vars(model, -5, "fatter_model.json")
+    # fatter_model = xgb.XGBRegressor()
+    # fatter_model.load_model("fatter_model.json")
+    # print(fatter_model.predict(X_test))
+
     #####################
     ##### CENTERING #####
     #####################
 
-    # Get mean of output
-    y_pred = model.predict(X_test)
-    mean_pred = np.mean(y_pred)
-    # Get one tree ("unsure_1.json" file contains model with first tree)
-    save_filtered_trees_indices(model, [0], "model_tree_1.json")
-    # load model with first tree for editing
-    with open("model_tree_1.json", "r") as f:
-        model_tree_1 = json.load(f)
-    # lists of children
-    tree = model_tree_1["learner"]["gradient_booster"]["model"]["trees"][0]
-    left_children = tree["left_children"]
-    right_children = tree["right_children"]
-    # get leaf indices (index = -1 for left and right children)
-    leaf_indices = [
-        i
-        for i, (left_child_val, right_child_val) in enumerate(
-            zip(left_children, right_children)
-        )
-        if left_child_val == -1 and right_child_val == -1
-    ]
-    # subtract mean from leaf values of that one tree
-    for i in leaf_indices:
-        tree["base_weights"][i] = float(tree["base_weights"][i] - mean_pred)
-    # save modified model to json file
-    with open("model_tree_1_centered.json", "w") as f:
-        json.dump(model_tree_1, f)
-
-    ####################
-    ##### PLOTTING #####
-    ####################
-    x_step = np.arange(0, 100, 0.1)
-    X_test = pd.DataFrame({"x1": x_step})
-
-    model_tree_1_centered = xgb.XGBRegressor()
-    model_tree_1_centered.load_model("model_tree_1_centered.json")
-    z_pred_model_tree_1_centered = model_tree_1_centered.predict(X_test)
-    z_pred = model.predict(X_test)
-
-    plot = go.Figure()
-
-    plot.add_trace(
-        go.Scatter(
-            x=X_test["x1"],
-            y=z_pred_model_tree_1_centered,
-            mode="lines",
-            name="z_pred_model_tree_1_centered: y = 10 * x1 + 2",
-            line=dict(color="red"),
-        )
-    )
-
-    plot.add_trace(
-        go.Scatter(
-            x=X_test["x1"],
-            y=z_pred,
-            mode="lines",
-            name="z_pred: y = 10 * x1 + 2",
-            line=dict(color="blue"),
-        )
-    )
-    plot.show()
+    # # Get mean of output
+    # y_pred = model.predict(X_test)
+    # mean_pred = np.mean(y_pred)
+    # # Get one tree ("unsure_1.json" file contains model with first tree)
+    # save_filtered_trees_indices(model, [0], "model_tree_1.json")
+    # # load model with first tree for editing
+    # with open("model_tree_1.json", "r") as f:
+    #     model_tree_1 = json.load(f)
+    # # lists of children
+    # tree = model_tree_1["learner"]["gradient_booster"]["model"]["trees"][0]
+    # left_children = tree["left_children"]
+    # right_children = tree["right_children"]
+    # # get leaf indices (index = -1 for left and right children)
+    # leaf_indices = [
+    #     i
+    #     for i, (left_child_val, right_child_val) in enumerate(
+    #         zip(left_children, right_children)
+    #     )
+    #     if left_child_val == -1 and right_child_val == -1
+    # ]
+    # # subtract mean from leaf values of that one tree
+    # for i in leaf_indices:
+    #     tree["base_weights"][i] = float(tree["base_weights"][i] - mean_pred)
+    # # save modified model to json file
+    # with open("model_tree_1_centered.json", "w") as f:
+    #     json.dump(model_tree_1, f)
