@@ -223,7 +223,7 @@ def test_additivity_one_tree():
     assert np.allclose(np.round(y_pred, 3), np.round(y_pred_sum, 3))
 
 
-def test_additivity_1(model):
+def additivity_1_test(model):
     """
     model: XGB regressor model
     num_trees: string resembling equation we are fitting
@@ -255,15 +255,6 @@ def test_additivity_1(model):
     assert np.allclose(
         np.round(z_pred, 3), np.round(z_pred_sum, 3), atol=0.1
     ), "TEST_ADDITIVITY_1 FAILED"
-
-
-def test_filter_numerical_1(model):
-    """returns True if z value doesn't change when x1 held constant (for f(x1))
-    returns True if z value doesn't change when x2 held constant (for f(x2))
-
-    Not sure if necessary if we have the contour plots
-    """
-    pass
 
 
 ###### TREE FILTER TESTS #####
@@ -337,7 +328,7 @@ def test_filter_two_vars_2():
     model.fit(X_train, y_train)
 
     # TESTS
-    test_additivity_1(model)
+    additivity_1_test(model)
 
     ##### PLOT #####
     # test_additivity_2(model)
@@ -377,7 +368,7 @@ def test_filter_two_vars_3():
     model.fit(X_train, y_train)
 
     # TESTS
-    test_additivity_1(model)
+    additivity_1_test(model)
 
     ##### GENERATE PREDICTIONS #####
     plot_linear_one_var(model, "y = 10x1 + 5x1x2 + 3")
@@ -428,7 +419,7 @@ def test_filter_two_vars_4():
     model.fit(X_train, y_train)
 
     ##### TESTS #####
-    test_additivity_1(model)
+    additivity_1_test(model)
 
     ##### PLOTTING #####
     # For x1 effect: vary x1, randomize x2 (from correlated normal)
@@ -530,7 +521,7 @@ def test_filter_two_vars_5():
     model.fit(X_train, y_train)
 
     # TESTS
-    test_additivity_1(model)
+    additivity_1_test(model)
 
     ##### GENERATE PREDICTIONS AND PLOT #####
     plot_linear_one_var(model, "y = log(x1 * x2)")
@@ -540,7 +531,7 @@ def test_filter_two_vars_5():
 
 
 # Not worrying about for now (assuming 2D works)
-def test_filter_three_vars_1():
+def filter_three_vars_1_test():
     """
     y = 10x1 + 8x2 + 7x3 + 2x1x2 + 9x1x3 + 3
         1000 Trees ---- depth 2
@@ -948,6 +939,41 @@ def test_filter_and_save_3():
     )
 
     contour_plot_Z_Pred_x1x2.show()
+
+
+###### TREE ADDING TESTS ######
+def test_tree_centering_1():
+    """Test if fatter taller prediction equals original prediciton"""
+    # Initialization
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)  # 1000 test points
+    y = 10 * x1 + 2
+
+    X = pd.DataFrame({"x1": x1})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    model = xgb.XGBRegressor(
+        n_estimators=1000,  # 100 trees
+        max_depth=1,  # depth of 1
+        learning_rate=1.0,
+        objective="reg:squarederror",
+        random_state=42,
+        base_score=0.8,
+    )
+    model.fit(X_train, y_train)
+
+    # Test similarity
+    tree_filtering.save_new_model_depth_1_two_vars_additional_tree(
+        model, X_test, "model_one_var_centered.json"
+    )
+    model_one_var_centered = xgb.XGBRegressor()
+    model_one_var_centered.load_model("model_one_var_centered.json")
+    y_pred_centered = model_one_var_centered.predict(X_test)
+    y_pred = model.predict(X_test)
+
+    assert np.allclose(np.round(y_pred, 3), np.round(y_pred_centered, 3), atol=0.1)
 
 
 ##### RANDOM GENERATORS #####

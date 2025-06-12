@@ -329,16 +329,20 @@ def filter_save_load(
     return output_models
 
 
-def create_new_tree_depth_1_two_vars(leaf_val, id):
+def create_new_tree_depth_1_two_vars(leaf_val, id, num_features):
     """
     returns a new tree (dictionary) in the format of the loaded json file
         i.e. returns something that looks like model_file in:
             with open(model_file_name) as f:
                 model_file = json.load(f)
+
+    id: int
+    num_features: int
     """
+    # leaf_val = round(float(leaf_val), 5)
     leaf_val = float(leaf_val)
     new_tree = {
-        "base_weights": [597.23035, leaf_val, leaf_val],
+        "base_weights": [leaf_val, leaf_val, leaf_val],
         "categories": [],
         "categories_nodes": [],
         "categories_segments": [],
@@ -349,13 +353,13 @@ def create_new_tree_depth_1_two_vars(leaf_val, id):
         "loss_changes": [45755536.0, 0.0, 0.0],
         "parents": [2147483647, 0, 0],
         "right_children": [2, -1, -1],
-        "split_conditions": [49.26181, 333.42834, 846.18335],
+        "split_conditions": [leaf_val, leaf_val, leaf_val],
         "split_indices": [0, 0, 0],
         "split_type": [0, 0, 0],
         "sum_hessian": [700.0, 341.0, 359.0],
         "tree_param": {
             "num_deleted": "0",
-            "num_feature": "2",
+            "num_feature": str(num_features),
             "num_nodes": "3",
             "size_leaf_vector": "1",
         },
@@ -363,11 +367,14 @@ def create_new_tree_depth_1_two_vars(leaf_val, id):
     return new_tree
 
 
-def save_new_trees_indices_depth_1_two_vars(model, leaf_val, output_name):
+def save_new_trees_indices_depth_1_two_vars(
+    model, leaf_val, base_score, num_features, output_name
+):
     """
     model: name of xgb regressor
     tree_indices: list of indices that we to keep
     leaf_vals: values we want to assign the leaves of the tree to
+    base_score: value we want to set the base score to
     name: "name of output file"
 
     Saves a new xgboost regressor model containing all the original trees, plus a new tree with leaf vals indicated by leaf_vals
@@ -390,12 +397,14 @@ def save_new_trees_indices_depth_1_two_vars(model, leaf_val, output_name):
             "gbtree_model_param"
         ]["num_trees"]
     )
-    additional_tree = create_new_tree_depth_1_two_vars(leaf_val, original_num_trees)
+    additional_tree = create_new_tree_depth_1_two_vars(
+        leaf_val, original_num_trees, num_features
+    )
     original_model_file["learner"]["gradient_booster"]["model"]["trees"].append(
         additional_tree
     )
 
-    # Edit other file parameters
+    # Edit other file parameters (num_trees, iteration_indptr, tree_info, base_score)
     original_model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
         "num_trees"
     ] = str(original_num_trees + 1)
@@ -403,6 +412,9 @@ def save_new_trees_indices_depth_1_two_vars(model, leaf_val, output_name):
         "iteration_indptr"
     ].append(original_num_trees + 1)
     original_model_file["learner"]["gradient_booster"]["model"]["tree_info"].append(0)
+    original_model_file["learner"]["learner_model_param"]["base_score"] = str(
+        float(base_score)
+    )
 
     # Write modified dictinoary new model to json file as output_name.json
     with open(str(output_name), "w") as file:
@@ -425,6 +437,37 @@ def save_new_trees_indices_two_vars(
     pass
 
 
+def save_new_model_depth_1_two_vars_additional_tree(model, X_test, new_model_file_name):
+    """
+    model: xgb regressor
+    X_test: pandas dataframe
+    new_model_file_name: string.json
+
+    Changes structure of model such that
+        there is an additional tree with leaf values equal to the negative mean (from all output vals on X_test)
+            (leaf values always added to prediction)
+
+        new base score equals the mean (from all output vals on test data), plus the original base score from model
+    """
+    # Get mean of output vals
+    y_pred = model.predict(X_test)
+    mean_pred = np.mean(y_pred)
+    original_base_score = get_bias(model)
+    new_base_score = round(float(mean_pred) + original_base_score, 6)
+    new_base_score_str = "{:.6f}".format(new_base_score)  # round
+    # print(f"new_base_score_str: {new_base_score_str}")
+
+    # Save new model
+    save_new_trees_indices_depth_1_two_vars(
+        model,
+        -mean_pred,
+        new_base_score_str,
+        1,
+        new_model_file_name,
+    )
+    # replacing new_base_score_str with original_base_score makes new_mean close to 0!
+
+
 if __name__ == "__main__":
     ########################
     ##### INITIALIZING #####
@@ -432,7 +475,6 @@ if __name__ == "__main__":
 
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 1000)
-    # x1 = np.arange(0, 100, 0.1)
     y = 10 * x1 + 2
 
     X = pd.DataFrame({"x1": x1})
@@ -441,7 +483,7 @@ if __name__ == "__main__":
     )
 
     model = xgb.XGBRegressor(
-        n_estimators=1,  # 100 trees
+        n_estimators=100,  # 100 trees
         max_depth=1,  # depth of 1
         learning_rate=1.0,
         objective="reg:squarederror",
@@ -450,41 +492,21 @@ if __name__ == "__main__":
     )
     model.fit(X_train, y_train)
 
-    ###############################
-    ##### TEST SAVE_NEW_TREES #####
-    ###############################
-    # save_new_trees_indices_depth_1_two_vars(model, -5, "fatter_model.json")
-    # fatter_model = xgb.XGBRegressor()
-    # fatter_model.load_model("fatter_model.json")
-    # print(fatter_model.predict(X_test))
-
     #####################
     ##### CENTERING #####
     #####################
+    save_new_model_depth_1_two_vars_additional_tree(
+        model, X_test, "model_one_var_centered.json"
+    )
+    model_one_var_centered = xgb.XGBRegressor()
+    model_one_var_centered.load_model("model_one_var_centered.json")
+    y_pred_centered = model_one_var_centered.predict(X_test)
+    mean_pred_centered = np.mean(y_pred_centered)
 
-    # # Get mean of output
-    # y_pred = model.predict(X_test)
-    # mean_pred = np.mean(y_pred)
-    # # Get one tree ("unsure_1.json" file contains model with first tree)
-    # save_filtered_trees_indices(model, [0], "model_tree_1.json")
-    # # load model with first tree for editing
-    # with open("model_tree_1.json", "r") as f:
-    #     model_tree_1 = json.load(f)
-    # # lists of children
-    # tree = model_tree_1["learner"]["gradient_booster"]["model"]["trees"][0]
-    # left_children = tree["left_children"]
-    # right_children = tree["right_children"]
-    # # get leaf indices (index = -1 for left and right children)
-    # leaf_indices = [
-    #     i
-    #     for i, (left_child_val, right_child_val) in enumerate(
-    #         zip(left_children, right_children)
-    #     )
-    #     if left_child_val == -1 and right_child_val == -1
-    # ]
-    # # subtract mean from leaf values of that one tree
-    # for i in leaf_indices:
-    #     tree["base_weights"][i] = float(tree["base_weights"][i] - mean_pred)
-    # # save modified model to json file
-    # with open("model_tree_1_centered.json", "w") as f:
-    #     json.dump(model_tree_1, f)
+    # # Test Similarity
+    # print(f"model prediction: {model.predict(X_test)[:10]}")
+    # print(
+    #     f"model_one_var_centered prediction: {model_one_var_centered.predict(X_test)[:10]}"
+    # )
+
+    print(f"mean_pred_centered: {mean_pred_centered}")
