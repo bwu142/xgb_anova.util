@@ -15,10 +15,18 @@ import plotly.graph_objects as go
 
 ###### TREE HELPER FUNCTIONS ######
 def get_bias(model):
-    bias = model.get_booster().attr("base_score")
-    if bias is not None:
-        return float(bias)
-    return float(model.base_score)  # Fallback
+    """gets bias even if not specified"""
+    model.save_model("bias_model.json")
+    with open("bias_model.json", "r") as f:
+        bias_model_file = json.load(f)
+    return float(bias_model_file["learner"]["learner_model_param"]["base_score"])
+
+    #### OLD WAY (NO SAVE) ####
+    # """get bias if specified"""
+    # bias = model.get_booster().attr("base_score")
+    # if bias is not None:
+    #     return float(bias)
+    # return float(model.base_score)  # Fallback
 
 
 def get_tree_leaf_indices(model_file, tree_index):
@@ -474,7 +482,7 @@ if __name__ == "__main__":
     ########################
 
     np.random.seed(42)
-    x1 = np.random.uniform(0, 100, 1000)
+    x1 = np.random.uniform(0, 100, 10)
     y = 10 * x1 + 2
 
     X = pd.DataFrame({"x1": x1})
@@ -508,5 +516,3 @@ if __name__ == "__main__":
     # print(
     #     f"model_one_var_centered prediction: {model_one_var_centered.predict(X_test)[:10]}"
     # )
-
-    print(f"mean_pred_centered: {mean_pred_centered}")
