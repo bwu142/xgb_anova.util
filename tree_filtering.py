@@ -346,7 +346,7 @@ def create_new_tree_depth_1_two_vars(leaf_val, id, num_features):
                 model_file = json.load(f)
 
     id: int
-    num_features: int
+    num_features: int2
     """
     # leaf_val = round(float(leaf_val), 5)
     leaf_val = float(leaf_val)

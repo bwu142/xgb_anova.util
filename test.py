@@ -11,6 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import tree_filtering
+import filter
 
 ##### CONTOUR PLOT HELPER FUNCTIONS #####
 
@@ -185,6 +186,173 @@ def plot_contour_two_vars(model, equation, start_val, stop_val, step_val):
     contour_plot_Z_Pred_x1x2.show()
 
 
+def plot_linear_one_var_xgbtrain(model, feature_names, equation):
+    """
+    model: xgb.Booster from xgb.train()
+    feature_names: list of feature names, e.g. ['x1', 'x2']
+    equation: string, for plot title
+    """
+    # Generate x_i vectors
+    x_step = np.arange(0, 100, 0.1)
+    x_random = np.random.uniform(0, 100, size=len(x_step))
+
+    # Pandas DataFrames
+    X_test1 = pd.DataFrame({feature_names[0]: x_step, feature_names[1]: x_random})
+    X_test2 = pd.DataFrame({feature_names[0]: x_random, feature_names[1]: x_step})
+
+    # Convert to DMatrix for xgb.train
+    dtest1 = xgb.DMatrix(X_test1)
+    dtest2 = xgb.DMatrix(X_test2)
+
+    # Get predicted values
+    model_x1 = filter.filter_save_load(model, (0,))
+    model_x2 = filter.filter_save_load(model, (1,))
+    y_pred_x1 = model_x1.predict(dtest1)
+    y_pred_x2 = model_x2.predict(dtest2)
+
+    # Plot
+    plot = go.Figure()
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test1[feature_names[0]],
+            y=y_pred_x1,
+            mode="lines",
+            name=f"z_pred_{feature_names[0]}",
+            line=dict(color="red"),
+        )
+    )
+
+    plot.add_trace(
+        go.Scatter(
+            x=X_test2[feature_names[1]],
+            y=y_pred_x2,
+            mode="lines",
+            name=f"z_pred_{feature_names[1]}",
+            line=dict(color="blue"),
+        )
+    )
+
+    plot.update_layout(
+        title=f"{equation}",
+        xaxis_title=f"{feature_names[0]}, {feature_names[1]}",
+        yaxis_title="Predicted z",
+    )
+
+    plot.show()
+
+
+def plot_contour_one_var_xgbtrain(
+    model, feature_names, equation, start_val, stop_val, step_val
+):
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    X_test = pd.DataFrame(
+        {feature_names[0]: all_pairs[:, 0], feature_names[1]: all_pairs[:, 1]}
+    )
+    dtest = xgb.DMatrix(X_test)
+
+    model_x1 = filter.filter_save_load(model, (0,))
+    model_x2 = filter.filter_save_load(model, (1,))
+    z_pred_x1 = model_x1.predict(dtest)
+    z_pred_x2 = model_x2.predict(dtest)
+    Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
+    Z_Pred_x2 = z_pred_x2.reshape(len(x2), len(x1))
+
+    # Contour for x1
+    fig1 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x1,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+    fig1.update_layout(
+        title=f"Z_Pred_{feature_names[0]}: {equation}",
+        xaxis_title=feature_names[0],
+        yaxis_title=feature_names[1],
+    )
+    fig1.show()
+
+    # Contour for x2
+    fig2 = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x2,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+    fig2.update_layout(
+        title=f"Z_Pred_{feature_names[1]}: {equation}",
+        xaxis_title=feature_names[0],
+        yaxis_title=feature_names[1],
+    )
+    fig2.show()
+
+
+def plot_contour_two_vars_xgbtrain(
+    model, feature_names, equation, start_val, stop_val, step_val
+):
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    X_test = pd.DataFrame(
+        {feature_names[0]: all_pairs[:, 0], feature_names[1]: all_pairs[:, 1]}
+    )
+    dtest = xgb.DMatrix(X_test)
+
+    model_x1x2 = filter.filter_save_load(model, (0, 1))
+    z_pred_x1x2 = model_x1x2.predict(dtest)
+    Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
+
+    fig = go.Figure(
+        data=go.Contour(
+            z=Z_Pred_x1x2,
+            x=x1,
+            y=x2,
+            colorscale="sunset",
+            contours=dict(
+                start=start_val,
+                end=stop_val,
+                size=step_val,
+                coloring="heatmap",
+                showlabels=True,
+            ),
+            line=dict(width=2),
+            colorbar=dict(title="Z value"),
+        )
+    )
+    fig.update_layout(
+        title=f"Z_Pred_{feature_names[0]}{feature_names[1]}: {equation}",
+        xaxis_title=feature_names[0],
+        yaxis_title=feature_names[1],
+    )
+    fig.show()
+
+
 ###### TREE ADDITIVITY TESTS #####
 def test_additivity_one_tree():
     """Test to see if prediction from summing predictions from individual trees (accounting for bias) equals prediction from original model"""
@@ -241,14 +409,55 @@ def additivity_1_test(model):
     z_pred_x1 = tree_filtering.predict(model, (0,), X_test)
     z_pred_x2 = tree_filtering.predict(model, (1,), X_test)
     z_pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
+    z_pred_none = tree_filtering.predict(model, (), X_test)
 
     # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
     bias = tree_filtering.get_bias(model)
 
     z_pred_sum = (
-        z_pred_x1 + z_pred_x2 + z_pred_x1x2 - 2 * bias
+        z_pred_x1 + z_pred_x2 + z_pred_x1x2 + z_pred_none - 3 * bias
     )  # QUESTION ABOUT THIS (IS THIS OK??)
     z_pred = model.predict(X_test, output_margin=True)
+    print(f"z_pred_sum{np.round(z_pred_sum[900:], 3)}")
+    print(f"z_pred{np.round(z_pred[900:], 3)}")
+    assert np.allclose(
+        np.round(z_pred, 3), np.round(z_pred_sum, 3), atol=0.1
+    ), "TEST_ADDITIVITY_1 FAILED"
+
+
+def additivity_1_test_general(model):
+    """
+    model: xgb.Booster (from xgb.train)
+    Returns True if adding up the predictions from each component (multiple filtered models) equals the original prediction.
+    """
+    # Generate all combinations of pairs (x1, x2) from 0 to 100 in 0.1 increments
+    x1 = np.arange(0, 100, 0.1)
+    x2 = np.arange(0, 100, 0.1)
+    X1, X2 = np.meshgrid(x1, x2)
+    all_pairs = np.column_stack([X1.flatten(), X2.flatten()])
+    X_test = pd.DataFrame({"x1": all_pairs[:, 0], "x2": all_pairs[:, 1]})
+    dtest = xgb.DMatrix(X_test)
+
+    # Get predictions from filtered models
+    model_x1 = filter.filter_save_load(model, (0,))
+    model_x2 = filter.filter_save_load(model, (1,))
+    model_x1x2 = filter.filter_save_load(model, (0, 1))
+    model_none = filter.filter_save_load(model, ())
+
+    z_pred_x1 = model_x1.predict(dtest)
+    z_pred_x2 = model_x2.predict(dtest)
+    z_pred_x1x2 = model_x1x2.predict(dtest)
+    z_pred_none = model_none.predict(dtest)
+
+    # Get bias
+    bias = filter.get_bias(model)
+
+    # Additive sum (adjusting for bias counted in each component)
+    z_pred_sum = z_pred_x1 + z_pred_x2 + z_pred_x1x2 + z_pred_none - 3 * bias
+
+    # Original model prediction
+    z_pred = model.predict(dtest)
+
     print(f"z_pred_sum{np.round(z_pred_sum[900:], 3)}")
     print(f"z_pred{np.round(z_pred[900:], 3)}")
     assert np.allclose(
@@ -528,9 +737,6 @@ def test_filter_two_vars_5():
 
     plot_contour_two_vars(model, "y = log(x1 * x2)", -6, 10, 2)
 
-
-# Not worrying about for now (assuming 2D works)
-def filter_three_vars_1_test():
     """
     y = 10x1 + 8x2 + 7x3 + 2x1x2 + 9x1x3 + 3
         1000 Trees ---- depth 2
@@ -556,86 +762,6 @@ def filter_three_vars_1_test():
         base_score=0.5,
     )
     model.fit(X_train, y_train)
-
-    return True
-
-    ##### GENERATE PREDICTIONS #####
-    # For visualization, use a smaller grid to avoid memory issues
-    x1 = np.arange(0, 100, 1)
-    x2 = np.arange(0, 100, 1)
-    x3 = np.arange(0, 100, 1)
-    X1, X2, X3 = np.meshgrid(x1, x2, x3)
-    all_points = np.column_stack([X1.flatten(), X2.flatten(), X3.flatten()])
-    X_test = pd.DataFrame(
-        {"x1": all_points[:, 0], "x2": all_points[:, 1], "x3": all_points[:, 2]}
-    )
-
-    # get predictions
-    pred_x1 = tree_filtering.predict(model, (0,), X_test)
-    pred_x2 = tree_filtering.predict(model, (1,), X_test)
-    pred_x3 = tree_filtering.predict(model, (2,), X_test)
-    pred_x1x2 = tree_filtering.predict(model, (0, 1), X_test)
-    pred_x1x3 = tree_filtering.predict(model, (0, 2), X_test)
-    pred_x2x3 = tree_filtering.predict(model, (1, 2), X_test)
-    pred_x1x2x3 = tree_filtering.predict(model, (0, 1, 2), X_test)
-    pred = model.predict(X_test, output_margin=True)  # vector
-
-    # reshape Z3 vector into 2D numpy array for contour plotting (rows: x2, cols: x1)
-    Pred_x1 = pred_x1.reshape(len(x2), len(x1), len(x1))
-    Pred_x2 = pred_x2.reshape(len(x2), len(x1), len(x1))
-    Pred_x3 = pred_x3.reshape(len(x3), len(x1), len(x1))
-    Pred_x1x2 = pred_x1x2.reshape(len(x3), len(x1), len(x1))
-    Pred_x1x3 = pred_x1x3.reshape(len(x3), len(x1), len(x1))
-    Pred_x2x3 = pred_x2x3.reshape(len(x3), len(x1), len(x1))
-    Pred_x1x2x3 = pred_x1x2x3.reshape(len(x3), len(x1), len(x1))
-    Z_Pred_Default = pred.reshape(len(x2), len(x1), len(x1))
-
-    ##### PLOT #####
-    pred_x1 = go.Figure(
-        data=go.Scatter3d(
-            x=x1,
-            y=x2,
-            z=x3,
-            mode="markers",
-            marker=dict(
-                size=3,
-                cmin=100,
-                cmax=150,
-                color=Pred_x1,  # Color by predicted y
-                colorscale="Viridis",
-                colorbar=dict(title="Predicted y"),
-            ),
-        )
-    )
-
-    pred_x1.update_layout(
-        scene=dict(xaxis_title="x1", yaxis_title="x2", zaxis_title="x3"),
-        title="pred_x1: y = 10x1 + 8x2 + 7x3 + 2x1x2 + 9x1x3 + 3",
-    )
-
-    pred = go.Figure(
-        data=go.Scatter3d(
-            x=x1,
-            y=x2,
-            z=x3,
-            mode="markers",
-            marker=dict(
-                size=3,
-                cmin=100,
-                cmax=150,
-                color=pred,  # Color by predicted y
-                colorscale="Viridis",
-                colorbar=dict(title="Predicted y"),
-            ),
-        )
-    )
-    pred.update_layout(
-        scene=dict(xaxis_title="x1", yaxis_title="x2", zaxis_title="x3"),
-        title="4D Visualization: Predicted y as color",
-    )
-
-    pred_x1.show()
-    pred.show()
 
 
 ###### TREE SAVING TESTS ######
@@ -689,11 +815,6 @@ def test_filter_and_save_1():
             "test_filter_and_save_2_x2.json",
             "test_filter_and_save_2_x1x2.json",
         ],
-        [
-            "filter_and_save_model_x1",
-            "filter_and_save_model_x2",
-            "filter_and_save_model_x1x2",
-        ],
         [(0,), (1,), (0, 1)],
     )
 
@@ -735,11 +856,6 @@ def test_filter_and_save_2():
             "test_filter_and_save_2_x1.json",
             "test_filter_and_save_2_x2.json",
             "test_filter_and_save_2_x1x2.json",
-        ],
-        [
-            "filter_and_save_model_x1",
-            "filter_and_save_model_x2",
-            "filter_and_save_model_x1x2",
         ],
         [(0,), (1,), (0, 1)],
     )
@@ -805,7 +921,6 @@ def test_filter_and_save_3():
             "test_filter_and_save_3_x2.json",
             "test_filter_and_save_3_x1x2.json",
         ],
-        ["filter_and_save_3_x1", "filter_and_save_3_x2", "filter_and_save_3_x1x2"],
         [(0,), (1,), (0, 1)],
     )
 
@@ -1030,6 +1145,145 @@ def general_generator():
 
     # # After saving
     # print(new_model.predict(X_test))
+
+
+##### GENERAL TRAIN TESTS (for filter.py) #####
+def test_general_1():
+    """ADDITIVITY"""
+    # Generate data
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    x2 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2 * x2 + 5
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    from sklearn.model_selection import train_test_split
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # Fit XGBoost using xgb.train
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    params = {
+        "max_depth": 2,
+        "eta": 1.0,
+        "objective": "reg:squarederror",
+        "base_score": 0.5,
+        "seed": 42,
+    }
+    model = xgb.train(params, dtrain, num_boost_round=1000)
+
+    # Run additivity test
+    additivity_1_test_general(model)
+
+
+def test_general_2():
+    """SIMPLE FILTERING"""
+    # Data generation and training with xgb.train()
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    x2 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2 * x2
+
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    params = {
+        "max_depth": 1,
+        "eta": 1.0,
+        "objective": "reg:squarederror",
+        "base_score": 0.8,
+        "seed": 42,
+    }
+    model = xgb.train(params, dtrain, num_boost_round=1000)
+
+    # Plot
+    plot_linear_one_var_xgbtrain(model, ["x1", "x2"], "y = 10 * x1 + 2 * x2")
+
+
+def test_general_3():
+    """3D FILTERING"""
+    # Generate data
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    x2 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2 * x2 + 5
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # Fit XGBoost with xgb.train
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    params = {
+        "max_depth": 2,
+        "eta": 1.0,
+        "objective": "reg:squarederror",
+        "base_score": 0.5,
+        "seed": 42,
+    }
+    model = xgb.train(params, dtrain, num_boost_round=1000)
+
+    # Plotting
+    plot_linear_one_var_xgbtrain(model, ["x1", "x2"], "z = 10 * x1 + 2 * x2 + 5")
+    plot_contour_one_var_xgbtrain(
+        model, ["x1", "x2"], "z = 10 * x1 + 2 * x2 + 5", -200, 200, 20
+    )
+    plot_contour_two_vars_xgbtrain(
+        model, ["x1", "x2"], "z = 10 * x1 + 2 * x2 + 5", -200, 200, 20
+    )
+
+
+def test_general_4():
+    """CENTERING"""
+    # Generate simple data
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 1000)
+    y = 10 * x1 + 2
+    X = pd.DataFrame({"x1": x1})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # Train with xgb.train
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dtest = xgb.DMatrix(X_test)
+    params = {
+        "max_depth": 1,
+        "eta": 1.0,
+        "objective": "reg:squarederror",
+        "base_score": 0.8,
+        "seed": 42,
+    }
+    model = xgb.train(params, dtrain, num_boost_round=1000)
+
+    # Get original predictions and mean
+    y_pred = model.predict(dtest)
+    mean_pred = np.mean(y_pred)
+    original_base_score = filter.get_bias(model)
+    new_base_score = round(float(mean_pred) + original_base_score, 6)
+    new_base_score_str = "{:.6f}".format(new_base_score)
+
+    # Call save_load_new_trees to add a tree with leaf value -mean_pred and update base_score
+    new_model = filter.save_load_new_trees(
+        model,
+        leaf_val=-mean_pred,
+        base_score=new_base_score_str,
+        num_new_trees=1,
+        output_file_name="model_one_var_centered.json",
+        folder="loaded_models",
+    )
+
+    # Predict with the new model
+    y_pred_centered = new_model.predict(dtest)
+
+    # Assert predictions are close
+    assert np.allclose(
+        np.round(y_pred, 3), np.round(y_pred_centered, 3), atol=0.1
+    ), "TEST_SAVE_LOAD_NEW_TREES FAILED"
 
 
 if __name__ == "__main__":

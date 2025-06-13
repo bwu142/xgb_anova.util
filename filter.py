@@ -90,13 +90,18 @@ def filter_save_load(
     tree_indices = get_filtered_tree_indices(model, feature_tuple)
     # Sanity check
     if not output_file_name.endswith(".json"):
-        output_name += ".json"
+        output_file_name += ".json"
 
-    # save model as json file
-    model.save_model("original_model.json")
+    # Ensure the folder exists
+    os.makedirs(folder, exist_ok=True)
+    original_model_path = os.path.join(folder, "original_model.json")
+    output_path = os.path.join(folder, output_file_name)
+
+    # Save model as json file in the specified folder
+    model.save_model(original_model_path)
 
     # Load in json file into Python Dictionary for editing purposes (manipulate json file directly)
-    with open("original_model.json", "r") as file:
+    with open(original_model_path, "r") as file:
         original_model = json.load(file)
 
     ##### EDIT TREES #####
@@ -162,24 +167,103 @@ def filter_save_load_list(model, feature_tuple_list=None, output_file_name_list=
 
 
 ##### APPENDING NEW TREES #####
-def create_new_tree(model, leaf_val, id):
+def save_load_new_trees(
+    model,
+    leaf_val,
+    base_score,
+    num_new_trees,
+    output_file_name="new_model.json",
+    folder="loaded_models",
+):
     """
     model: xgb.train(...)
     leaf_val: float
-    id: int
+    base_score: string
+    num_new_trees: int (number of trees to add)
 
-    Returns dict representing a tree in saved json format
+    Returns new model with additional trees specified
     """
-    leaf_val = float(leaf_val)
-    # save model as json file
-    model.save_model("original_model.json")
+    # Sanity Check
+    if not output_file_name.endswith(".json"):
+        output_name += ".json"
 
-    original_model = 5
+    # Ensure the folder exists
+    os.makedirs(folder, exist_ok=True)
+    original_model_path = os.path.join(folder, "original_model.json")
+    output_path = os.path.join(folder, output_file_name)
 
+    # Save model as json file in the specified folder
+    model.save_model(original_model_path)
 
-def save_new_trees(model, leaf_val, base_score):
-    model.save_model("original_model.json")
-    pass
+    # Load in json file into Python Dictionary for editing purposes (manipulate json file directly)
+    with open(original_model_path, "r") as file:
+        original_model_file = json.load(file)
+
+    def create_new_tree(model_file, leaf_val, new_id):
+        """
+        model_file: loaded in file
+            with open("original_model.json", "r") as f:
+                original_model_file = json.load(f)
+        leaf_val: float
+        new_id: int
+
+        Returns a tree in the structure of the trees within model_file
+            model_file must have AT LEAST ONE TREE
+        """
+        leaf_val = float(leaf_val)
+        # Get arbitrary tree structure
+        new_tree = model_file["learner"]["gradient_booster"]["model"]["trees"][0].copy()
+        new_tree["base_weights"] = [
+            leaf_val for _ in range(len(new_tree["base_weights"]))
+        ]
+        new_tree["split_conditions"] = [
+            leaf_val for _ in range(len(new_tree["base_weights"]))
+        ]
+        new_tree["id"] = new_id
+        return new_tree
+
+    ##### ADD TREES #####
+    original_num_trees = int(
+        original_model_file["learner"]["gradient_booster"]["model"][
+            "gbtree_model_param"
+        ]["num_trees"]
+    )
+    cur_id_num = original_num_trees
+
+    for _ in range(num_new_trees):
+        additional_tree = create_new_tree(original_model_file, leaf_val, cur_id_num)
+        original_model_file["learner"]["gradient_booster"]["model"]["trees"].append(
+            additional_tree
+        )
+
+        cur_id_num += 1
+
+    ##### EDIT OTHER FILE PARAMS #####
+    original_model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
+        "num_trees"
+    ] = str(original_num_trees + num_new_trees)
+    original_model_file["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
+        i for i in range(original_num_trees + num_new_trees + 1)
+    ]
+    original_model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [0] * (
+        original_num_trees + num_new_trees
+    )
+    original_model_file["learner"]["learner_model_param"]["base_score"] = str(
+        float(base_score)
+    )
+
+    ##### SAVE #####
+    # Ensure the folder exists
+    os.makedirs(folder, exist_ok=True)
+    output_path = os.path.join(folder, output_file_name)
+
+    ##### SAVE #####
+    with open(output_path, "w") as file:
+        json.dump(original_model_file, file)
+
+    new_model = xgb.Booster()
+    new_model.load_model(output_path)
+    return new_model
 
 
 if __name__ == "__main__":
@@ -214,7 +298,7 @@ if __name__ == "__main__":
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=1000,  # Equivalent to n_estimators
+        num_boost_round=1,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
@@ -234,3 +318,6 @@ if __name__ == "__main__":
 
     the_list = filter_save_load_list(model, [(0,), (1,), (0, 1), ()])
     print(the_list[0].predict(dtest))
+
+    a = save_load_new_trees(model, 4.0, "5", 2)
+    print(a.predict(dtest))
