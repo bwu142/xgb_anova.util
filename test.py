@@ -5,7 +5,6 @@ import pytest
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import plotly.express as px
@@ -1035,10 +1034,3 @@ def general_generator():
 
 if __name__ == "__main__":
     pass
-
-# target - x = difference
-# target - y = target - x
-# x = y
-# nums[i] + nums[j] == target
-# target - nums[i] == nums[j]
-# target - x = y

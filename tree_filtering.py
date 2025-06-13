@@ -4,7 +4,6 @@
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import json
@@ -136,6 +135,7 @@ def get_filtered_tree_list_ranges_from_tuple(model, features_tuple=None):
     return get_filtered_trees(model, features_needed)[0]
 
 
+##### PREDICT METHOD 1 #####
 def get_split_tree_predictions(model, test_set, ranges):
     """
     model: xgb regressor (model = xgb.XGBRegressor())
@@ -204,6 +204,7 @@ def predict(model, features_tuple, test_set):
 
 
     Returns: prediction (1D numpy array) using relevant trees in 'ranges' from model
+        add in optional range_list
     """
     # list of ranges
     range_list = get_filtered_tree_list_ranges_from_tuple(model, features_tuple)
@@ -308,9 +309,7 @@ def filter_and_save(model, output_name, features_tuple=None):
     save_filtered_trees(model, ranges, output_name)
 
 
-def filter_save_load(
-    model, output_file_names, output_model_names, features_tuple_list=None
-):
+def filter_save_load(model, output_file_names, features_tuple_list=None):
     """
     model: xgb regressor (model = xgb.XGBRegressor())
     output_file_names (list of strings): names we want to save the file as (ends with .json)
@@ -324,17 +323,19 @@ def filter_save_load(
     loads filtered models into corresponding vars with corresponding output_model_names
     """
     output_models = []
-    for i in range(len(output_model_names)):
+    for i in range(len(output_file_names)):
         output_file_name = output_file_names[i]
-        output_model_name = output_model_names[i]
         features_tuple = features_tuple_list[i]
 
         filter_and_save(model, output_file_name, features_tuple)
-        output_model_name = xgb.XGBRegressor()
-        output_model_name.load_model(output_file_name)
-        output_models.append(output_model_name)
+        output_model = xgb.XGBRegressor()
+        output_model.load_model(output_file_name)
+        output_models.append(output_model)
 
     return output_models
+
+
+##### MAKING NEW TREES #####
 
 
 def create_new_tree_depth_1_two_vars(leaf_val, id, num_features):
@@ -516,3 +517,4 @@ if __name__ == "__main__":
     # print(
     #     f"model_one_var_centered prediction: {model_one_var_centered.predict(X_test)[:10]}"
     # )
+    print(xgb.__version__)
