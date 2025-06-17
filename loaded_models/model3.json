@@ -1,1 +1,28 @@
-{"learner": {"attributes": {}, "feature_names": ["x1", "x2"], "feature_types": ["float", "float"], "gradient_booster": {"model": {"gbtree_model_param": {"num_parallel_tree": "1", "num_trees": "0"}, "iteration_indptr": [0], "tree_info": [], "trees": []}, "name": "gbtree"}, "learner_model_param": {"base_score": "6.7900913E3", "boost_from_average": "1", "num_class": "0", "num_feature": "2", "num_target": "1"}, "objective": {"name": "reg:squarederror", "reg_loss_param": {"scale_pos_weight": "1"}}}, "version": [3, 0, 2]}
+{
+  "learner": {
+    "attributes": {},
+    "feature_names": ["x1", "x2"],
+    "feature_types": ["float", "float"],
+    "gradient_booster": {
+      "model": {
+        "gbtree_model_param": { "num_parallel_tree": "1", "num_trees": "0" },
+        "iteration_indptr": [0],
+        "tree_info": [],
+        "trees": []
+      },
+      "name": "gbtree"
+    },
+    "learner_model_param": {
+      "base_score": "5.747182E2",
+      "boost_from_average": "1",
+      "num_class": "0",
+      "num_feature": "2",
+      "num_target": "1"
+    },
+    "objective": {
+      "name": "reg:squarederror",
+      "reg_loss_param": { "scale_pos_weight": "1" }
+    }
+  },
+  "version": [3, 0, 2]
+}
