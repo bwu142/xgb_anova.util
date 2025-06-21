@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import json
 import tree_filtering
 import filter
+import purify
 
 ##### CONTOUR PLOT HELPER FUNCTIONS #####
 
@@ -205,8 +206,8 @@ def plot_linear_one_var_xgbtrain(model, feature_names, equation):
     dtest2 = xgb.DMatrix(X_test2)
 
     # Get predicted values
-    model_x1 = filter.filter_save_load(model, (0,))
-    model_x2 = filter.filter_save_load(model, (1,))
+    model_x1 = purify.filter_save_load(model, (0,))
+    model_x2 = purify.filter_save_load(model, (1,))
     y_pred_x1 = model_x1.predict(dtest1)
     y_pred_x2 = model_x2.predict(dtest2)
 
@@ -254,8 +255,8 @@ def plot_contour_one_var_xgbtrain(
     )
     dtest = xgb.DMatrix(X_test)
 
-    model_x1 = filter.filter_save_load(model, (0,))
-    model_x2 = filter.filter_save_load(model, (1,))
+    model_x1 = purify.filter_save_load(model, (0,))
+    model_x2 = purify.filter_save_load(model, (1,))
     z_pred_x1 = model_x1.predict(dtest)
     z_pred_x2 = model_x2.predict(dtest)
     Z_Pred_x1 = z_pred_x1.reshape(len(x2), len(x1))
@@ -324,7 +325,7 @@ def plot_contour_two_vars_xgbtrain(
     )
     dtest = xgb.DMatrix(X_test)
 
-    model_x1x2 = filter.filter_save_load(model, (0, 1))
+    model_x1x2 = purify.filter_save_load(model, (0, 1))
     z_pred_x1x2 = model_x1x2.predict(dtest)
     Z_Pred_x1x2 = z_pred_x1x2.reshape(len(x2), len(x1))
 
@@ -439,10 +440,10 @@ def additivity_1_test_general(model):
     dtest = xgb.DMatrix(X_test)
 
     # Get predictions from filtered models
-    model_x1 = filter.filter_save_load(model, (0,))
-    model_x2 = filter.filter_save_load(model, (1,))
-    model_x1x2 = filter.filter_save_load(model, (0, 1))
-    model_none = filter.filter_save_load(model, ())
+    model_x1 = purify.filter_save_load(model, (0,))
+    model_x2 = purify.filter_save_load(model, (1,))
+    model_x1x2 = purify.filter_save_load(model, (0, 1))
+    model_none = purify.filter_save_load(model, ())
 
     z_pred_x1 = model_x1.predict(dtest)
     z_pred_x2 = model_x2.predict(dtest)
@@ -450,7 +451,7 @@ def additivity_1_test_general(model):
     z_pred_none = model_none.predict(dtest)
 
     # Get bias
-    bias = filter.get_bias(model)
+    bias = purify.get_bias(model)
 
     # Additive sum (adjusting for bias counted in each component)
     z_pred_sum = z_pred_x1 + z_pred_x2 + z_pred_x1x2 + z_pred_none - 3 * bias
@@ -1284,6 +1285,46 @@ def test_general_4():
     assert np.allclose(
         np.round(y_pred, 3), np.round(y_pred_centered, 3), atol=0.1
     ), "TEST_SAVE_LOAD_NEW_TREES FAILED"
+
+
+##### PURIFICATION TESTS #####
+def test_purification_1():
+    """5 Nodes"""
+    np.random.seed(42)
+    x1 = np.random.uniform(0, 100, 10)
+    x2 = np.random.uniform(0, 100, 10)
+    y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5
+
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    # Convert to DMatrix format required by xgb.train
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dtest = xgb.DMatrix(X_test, label=y_test)
+
+    # Parameters (note different parameter names)
+    params = {
+        "max_depth": 2,
+        "learning_rate": 1.0,
+        "objective": "reg:squarederror",
+        "random_state": 42,
+    }
+
+    # Training with monitoring
+    model = xgb.train(
+        params=params,
+        dtrain=dtrain,
+        num_boost_round=5,  # Equivalent to n_estimators
+        evals=[(dtrain, "train"), (dtest, "test")],
+        verbose_eval=True,
+    )
+
+    new_model = purify.filter_save_load(model, (0, 1), "original_model.json")
+    print(f"original_prediction: {new_model.predict(dtest)}")
+    purified_new_model = purify.fANOVA_2D(new_model, dtest)
+    print(f"purified_prediction: {purified_new_model.predict(dtest)}")
 
 
 if __name__ == "__main__":

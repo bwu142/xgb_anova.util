@@ -23,6 +23,131 @@ import json
 import matplotlib.pyplot as plt
 
 
+##### PURIFY FIVE NODES #####
+def purify_five_nodes(model_file, tree_index, test_data, folder="loaded_models"):
+    """
+    model_file: loaded in file
+            with open("original_model.json", "r") as f:
+                original_model_file = json.load(f)
+    tree_index: index of the tree we are purifying
+    test_data: DMatrix
+
+    Purifies f(x1, x2) with respect to the easier variable
+        Modifies and Returns model_file
+    """
+    trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
+    tree = trees[tree_index]
+
+    ##### MODIFY ORIGINAL TREE #####
+    depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
+    # Index of leaf at depth 1
+    depth_one_leaf_index = -1
+    # Index of root node of subtree with two leaves
+    depth_two_subtree_root_index = -1
+
+    for index in depth_one_node_indices:
+        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
+            depth_one_leaf_index = index
+        else:
+            depth_two_subtree_root_index = index
+
+    # leaf value of the two new leaves we are adding
+    new_leaf_val = tree["base_weights"][depth_one_leaf_index]
+
+    # Add two new leaf nodes
+    new_left_leaf_index = len(tree["base_weights"])
+    new_right_leaf_index = new_left_leaf_index + 1
+
+    tree["base_weights"].extend([new_leaf_val, new_leaf_val])
+    tree["left_children"].extend([-1, -1])
+    tree["right_children"].extend([-1, -1])
+    tree["split_indices"].extend([0, 0])
+    tree["split_conditions"].extend([new_leaf_val, new_leaf_val])
+
+    # Update original leaf node into a split like other subtree
+    depth_two_subtree_split_index = tree["split_indices"][depth_two_subtree_root_index]
+    depth_two_subtree_split_condition = tree["split_conditions"][
+        depth_two_subtree_root_index
+    ]
+
+    tree["base_weights"][depth_one_leaf_index] = 0
+    tree["left_children"][depth_one_leaf_index] = new_left_leaf_index
+    tree["right_children"][depth_one_leaf_index] = new_right_leaf_index
+    tree["split_indices"][depth_one_leaf_index] = depth_two_subtree_split_index
+    tree["split_conditions"][depth_one_leaf_index] = depth_two_subtree_split_condition
+
+    ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
+
+    ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+
+    ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
+    # Ensure the folder exists
+    os.makedirs(folder, exist_ok=True)
+    output_path = os.path.join(folder, "original_model.json")
+
+    # Save model as json file in the specified folder
+    with open(output_path, "w") as file:
+        json.dump("model.json", file)
+
+    new_model = xgb.Booster()
+    new_model.load_model(output_path)
+
+    # Get means
+    left_leaf_index_one = new_left_leaf_index
+    left_leaf_index_two = tree["left_children"][depth_two_subtree_root_index]
+    right_leaf_index_one = new_right_leaf_index
+    right_leaf_index_two = tree["right_children"][depth_two_subtree_root_index]
+
+    leaf_counts = get_leaf_count(new_model, test_data, tree_index)
+
+    num_left = 0
+    sum_left = 0
+    num_right = 0
+    sum_right = 0
+
+    for leaf_index, count in leaf_counts.items():
+        if leaf_index == left_leaf_index_one:
+            num_left += count
+            sum_left += tree["base_weights"][left_leaf_index_one]
+        elif leaf_index == left_leaf_index_two:
+            num_left += count
+            sum_left += tree["base_weights"][left_leaf_index_two]
+        elif leaf_index == right_leaf_index_one:
+            num_right += count
+            sum_right += tree["base_weights"][right_leaf_index_one]
+        else:
+            num_right += count
+            sum_right += tree["base_weights"][right_leaf_index_one]
+
+    mean_left = sum_left / num_left
+    mean_right = sum_right / num_right
+
+    # Subtract means from respective leaves
+    tree["base_weights"][left_leaf_index_one] -= mean_left
+    tree["split_conditions"][left_leaf_index_one] -= mean_left
+    tree["base_weights"][left_leaf_index_two] -= mean_left
+    tree["split_conditions"][left_leaf_index_two] -= mean_left
+    tree["base_weights"][right_leaf_index_one] -= mean_right
+    tree["split_conditions"][right_leaf_index_one] -= mean_right
+    tree["base_weights"][right_leaf_index_two] -= mean_right
+    tree["split_conditions"][right_leaf_index_two] -= mean_right
+
+    ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+    cur_id = len(trees)
+    additional_tree = create_depth_one_tree(
+        model_file, mean_left, cur_id, other_subtree_split_index
+    )
+    trees.append(additional_tree)
+    cur_id += 1
+    additional_tree = create_depth_one_tree(
+        model_file, mean_right, cur_id, other_subtree_split_index
+    )
+    trees.append(additional_tree)
+    cur_id += 1
+
+    return model_file
+
+
 def generate_data_and_model(
     n_samples=1000,
     rho=0.5,

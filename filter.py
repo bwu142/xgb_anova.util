@@ -49,7 +49,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
         if features is None:
             features = set()
         if "split" in node:
-            features.add(int(node["split"][1]) - 1)
+            features.add(int(node["split"][1:]) - 1)
             # Only recurse if not a leaf
             if "children" in node:
                 for child in node["children"]:
