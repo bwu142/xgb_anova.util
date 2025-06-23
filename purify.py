@@ -5,23 +5,25 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
-import matplotlib.pyplot as plt
 import json
 import plotly.express as px
 import os
 import plotly.graph_objects as go
-import io
 
 
-##### TREE HELPER FUNCTIONS #####
+##### SAVE AND LOAD HELPER FUNCTIONS #####
 def get_model_file(
     model, input_file_name="original_model.json", folder="loaded_models"
 ):
     """
-    model: xgb.train(...)
+    Args:
+        model (Booster): trained model
+        input_file_name (string):
+        folder (string):
 
-    Returns file (dictionary) version of model that can be used for editing
-        Saves original model to "original_model.json" in the process
+    Returns:
+        dictionary: file version of model that can be edited
+    Saves: json file as "input_file_name" in "folder"
     """
     # Sanity check
     if not input_file_name.endswith(".json"):
@@ -39,93 +41,90 @@ def get_model_file(
 
 def get_model(model_file, output_file_name="new_model.json", folder="loaded_models"):
     """
-    model_file: file (dictionary) version of model
+    Args:
+        model_file (dictionary): file version of model that can be edited
+        input_file_name (string):
+        folder (string):
 
-    Returns model (Booster object) that can be used for predictions
-        Saves model_file to "model.json" in the process
+    Returns:
+        Booster: model used for predictions
+    Saves model_file as "output_file_name" in "folder"
     """
     # Sanity check
     if not output_file_name.endswith(".json"):
         output_file_name += ".json"
     # Ensure the folder exists
     os.makedirs(folder, exist_ok=True)
-
     # Save file as json file
     output_path = os.path.join(folder, output_file_name)
     with open(output_path, "w") as file:
         json.dump(model_file, file)
-
     # Load model
     new_model = xgb.Booster()
     new_model.load_model(output_path)
     return new_model
 
 
-def get_bias(model, input_file_name="model_bias", folder="loaded_models"):
+##### TREE HELPER FUNCTIONS #####
+def get_bias(model, input_file_name="original_model.json", folder="loaded_models"):
     """
-    model: xgb.train(...)
-    Returns bias (even if unspecified in model params)
+    Args:
+        model (Booster):
+
+    Returns:
+        float: model's bias/base score
     """
     bias_model_file = get_model_file(model, input_file_name, folder)
     return float(bias_model_file["learner"]["learner_model_param"]["base_score"])
 
 
-def get_leaf_indices(tree):
+def get_leaf_indices_seven_nodes(tree):
     """
-    tree: a tree (dictionary) in loaded in json model file
+    Args:
+        tree (dictinoary): 7-node, depth-2 tree in model_file with 4 leaves
 
-    Returns indices of the leaves in json_tree (depth of 2)
-    """
-    left_children = tree["learner"]["gradient_booster"]["model"]["trees"][
-        "left_children"
-    ]
-    right_children = tree["learner"]["gradient_booster"]["model"]["trees"][
-        "right_children"
-    ]
-    leaf_indices = []
-    for index, (left, right) in enumerate(zip(left_children, right_children)):
-        if left == -1 and right == -1:
-            leaf_indices.append(index)
-
-    return leaf_indices
-
-
-def get_ordered_leaf_indices(tree):
-    """
-    tree: a tree (dictionary) in loaded in json model file
-
-    Returns List --> For a 7 node depth two tree with four leaves, returns list of leaf indices in order from left to right
+    Returns:
+        list of ints: list of four leaf indices in order from left to right
     """
     # Left Subtree
-    left_index = tree["left_children"][0]
-    left_left_index = tree["left_children"][left_index]
-    left_right_index = tree["right_children"][left_index]
+    root_left_index = tree["left_children"][0]
+    root_left_left_index = tree["left_children"][root_left_index]
+    root_left_right_index = tree["right_children"][root_left_index]
 
     # Right Subtree
-    right_index = tree["right_children"][0]
-    right_left_index = tree["left_children"][right_index]
-    right_right_index = tree["right_children"][right_index]
+    root_right_index = tree["right_children"][0]
+    root_right_left_index = tree["left_children"][root_right_index]
+    root_right_left_index = tree["right_children"][root_right_index]
 
-    return [left_left_index, left_right_index, right_left_index, right_right_index]
+    return [
+        root_left_left_index,
+        root_left_right_index,
+        root_right_left_index,
+        root_right_left_index,
+    ]
 
 
+##### TREE FILTERING #####
 def get_filtered_tree_indices(model, feature_tuple=None):
     """
-    model: xgb.train(...)
-    feature_tuple: 0-indexing
-        (0, ) means trees only with f(x1)
-        (0, 1) means trees only with f(x1x2)
-    Returns list of tree indices with splits corresponding to feature_tuple
-        [0, 1, 4] means that trees 0, 1, and 4 in model contain features in that feature_tuple
+    Args:
+        model (Booster): trained model
+        feature_tuple (tuple): 0-indexing tuple representing features we want to filter for
+            (0, ) --> trees only with x1 splits | f(x1)
+            (0, 1) --> trees only with x1 AND x2 splits | f(x1, x2)
+
+    Returns:
+        list of ints: list of tree indices with splits corresopnding to feature_tuple
+            [0, 1, 4] means that trees 0, 1, and 4 in "model" contain the exact features in "feature_tuple"
     """
 
     def get_features_used(node, features=None):
         """
-        node: tree/subtree (originally the root node) -- dictionary
-
-        Returns set of all features used in one tree (represented as ints w/0-indexing)
-            {0, 1} means x1 and x2 were used (subsequently?) in the tree
-
+        Args:
+            node (dictionary): tree/subtree (originally root node)
+        Returns:
+            set of ints: all features used in tree "node" (represented as ints w/0-indexing)
+                {0, 1} means that only x1 and x2 were used as splits in the tree
         """
         if features is None:
             features = set()
@@ -154,33 +153,33 @@ def get_filtered_tree_indices(model, feature_tuple=None):
     return filtered_tree_indices
 
 
-##### TREE FILTERING #####
-def filter_save_load(
+def get_filtered_model(
     model, feature_tuple=None, output_file_name="new_model.json", folder="loaded_models"
 ):
     """
-    model: xgb.train(...)
-    feature_tuple: 0-indexing
-        (0, ) means trees only with f(x1)
-        (0, 1) means trees only with f(x1x2)
-    Returns new model that only contains trees with features specified by feature_tuple
+    Args:
+        model (Booster): trained model
+        feature_tuple (tuple): 0-indexing tuple representing features we want to filter for
+    Returns:
+        Booster: new model that only contains trees with features specified by feature_tuple
+    Saves new model as "output_file_name" in "folder"
     """
     ##### LOAD #####
     original_model_file = get_model_file(model, "original_model.json")
     tree_indices = get_filtered_tree_indices(model, feature_tuple)
 
-    ##### EDIT TREES #####
+    ##### FILTER TREES #####
     new_trees = []
-    id_count = 0
+    cur_id = 0
     for i in tree_indices:
         new_trees.append(
             original_model_file["learner"]["gradient_booster"]["model"]["trees"][i]
         )
-        new_trees[id_count]["id"] = id_count
-        id_count += 1
+        new_trees[cur_id]["id"] = cur_id
+        cur_id += 1
     original_model_file["learner"]["gradient_booster"]["model"]["trees"] = new_trees
 
-    ##### EDIT OTHER FILE PARAMS #####
+    ##### UPDATE MODEL METADATA #####
     # Edit num_trees
     original_model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
         "num_trees"
@@ -199,15 +198,15 @@ def filter_save_load(
     return new_model
 
 
-def filter_save_load_list(model, feature_tuple_list=None, output_file_name_list=None):
+def get_filtered_model_list(model, feature_tuple_list=None, output_file_name_list=None):
     """
-    model: xgb.train(...)
-    feature_tuple: 0-indexing
-        (0, ) means trees only with f(x1)
-        (0, 1) means trees only with f(x1x2)
-    output_file_name_list: corresponding list of file names to be saved, ending with json
-    Returns new model that only contains trees with features specified by feature_tuple
+    Args:
+        model (Booster): trained model
+    feature_tuple_list (list of tuples): list of feature_tuples
+    output_file_name_list (list of strings): corresponding list of file names to be saved, ending with json
 
+    Returns:
+        list: list of new_models corresponding to each feature_tuple in "feature_tuple_list"
     """
     if output_file_name_list is None:
         output_file_name_list = [
@@ -218,90 +217,15 @@ def filter_save_load_list(model, feature_tuple_list=None, output_file_name_list=
         output_file_name = output_file_name_list[i]
         features_tuple = output_file_name_list[i]
 
-        output_models.append(filter_save_load(model, output_file_name, features_tuple))
+        output_models.append(
+            get_filtered_model(model, output_file_name, features_tuple)
+        )
 
     return output_models
 
 
-##### APPENDING NEW TREES #####
-def get_new_duplicate_tree(model_file, leaf_val, new_id):
-    """
-    model_file: loaded in file
-        with open("original_model.json", "r") as f:
-            original_model_file = json.load(f)
-    leaf_val: float
-    new_id: int
-
-    Returns a tree in the structure of the first tree in model_file
-        model_file must have AT LEAST ONE TREE
-    """
-    leaf_val = float(leaf_val)
-    # Get arbitrary tree structure
-    new_tree = model_file["learner"]["gradient_booster"]["model"]["trees"][0].copy()
-    new_tree["base_weights"] = [leaf_val for _ in range(len(new_tree["base_weights"]))]
-    new_tree["split_conditions"] = [
-        leaf_val for _ in range(len(new_tree["base_weights"]))
-    ]
-    new_tree["id"] = new_id
-    return new_tree
-
-
-def save_load_new_trees(
-    model,
-    leaf_val,
-    base_score,
-    num_new_trees,
-    output_file_name="new_model.json",
-    folder="loaded_models",
-):
-    """
-    model: xgb.train(...)
-    leaf_val: float
-    base_score: string
-    num_new_trees: int (number of trees to add)
-
-    Returns new model with additional trees specified
-    """
-    original_model_file = get_model_file(model)
-
-    ##### ADD TREES #####
-    original_num_trees = int(
-        original_model_file["learner"]["gradient_booster"]["model"][
-            "gbtree_model_param"
-        ]["num_trees"]
-    )
-    cur_id_num = original_num_trees
-
-    for _ in range(num_new_trees):
-        additional_tree = get_new_duplicate_tree(
-            original_model_file, leaf_val, cur_id_num
-        )
-        original_model_file["learner"]["gradient_booster"]["model"]["trees"].append(
-            additional_tree
-        )
-
-        cur_id_num += 1
-
-    ##### EDIT OTHER FILE PARAMS #####
-    original_model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
-        "num_trees"
-    ] = str(original_num_trees + num_new_trees)
-    original_model_file["learner"]["gradient_booster"]["model"]["iteration_indptr"] = [
-        i for i in range(original_num_trees + num_new_trees + 1)
-    ]
-    original_model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [0] * (
-        original_num_trees + num_new_trees
-    )
-    original_model_file["learner"]["learner_model_param"]["base_score"] = str(
-        float(base_score)
-    )
-
-    new_model = get_model(original_model_file, output_file_name, folder)
-    return new_model
-
-
 ##### PURIFICATION HELPER FUNCTIONS #####
-def get_new_depth_one_tree(
+def get_new_three_node_tree(
     leaf_val_left, leaf_val_right, new_id, split_index, split_condition
 ):
     """
@@ -315,7 +239,7 @@ def get_new_depth_one_tree(
     """
     leaf_val_left = float(leaf_val_left)
     leaf_val_right = float(leaf_val_right)
-    tree = {
+    new_tree = {
         "base_weights": [-0.12812316, leaf_val_left, leaf_val_right],
         "categories": [],
         "categories_nodes": [],
@@ -338,15 +262,7 @@ def get_new_depth_one_tree(
             "size_leaf_vector": "1",
         },
     }
-    return tree
-
-
-def get_new_depth_two_tree_left():
-    pass
-
-
-def get_new_depth_two_tree_right():
-    pass
+    return new_tree
 
 
 def split_node(tree, leaf_index, node_index):
@@ -415,7 +331,7 @@ def get_subtract_means_seven_nodes(tree, node_index, test_data):
         X = X.toarray()
 
     # Get specific leaf indices
-    A_index, B_index, C_index, D_index = get_ordered_leaf_indices(tree)
+    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
 
     # Get number of test points that fall into each leaf
     num_A = 0
@@ -448,116 +364,76 @@ def get_subtract_means_seven_nodes(tree, node_index, test_data):
 
     # Split by root index (AB vs. CD)
     if node_index == 0:
-        left_mean = (
-            num_A * tree["base_weights"][A_index]
-            + num_B * tree["base_weights"][B_index]
-        ) / (num_A + num_B)
-        right_mean = (
-            num_C * tree["base_weights"][C_index]
-            + num_D * tree["base_weights"][D_index]
-        ) / (num_C + num_D)
+        left_total = num_A + num_B
+        right_total = num_C + num_D
 
-        # Subtract means from nodes
+        if left_total > 0:
+            left_mean = (
+                num_A * tree["base_weights"][A_index]
+                + num_B * tree["base_weights"][B_index]
+            ) / (num_A + num_B)
+        else:
+            left_mean = 0.0
+
+        if right_total > 0:
+            right_mean = (
+                num_C * tree["base_weights"][C_index]
+                + num_D * tree["base_weights"][D_index]
+            ) / (num_C + num_D)
+        else:
+            right_mean = 0.0
+
+        # Subtract means from leaf nodes
         tree["base_weights"][A_index] -= left_mean
         tree["base_weights"][B_index] -= left_mean
         tree["base_weights"][C_index] -= right_mean
         tree["base_weights"][D_index] -= right_mean
 
+        tree["split_conditions"][A_index] -= left_mean
+        tree["split_conditions"][B_index] -= left_mean
+        tree["split_conditions"][C_index] -= right_mean
+        tree["split_conditions"][D_index] -= right_mean
+
     # Split by depth-1 index (AC vs. BD)
     else:
-        left_mean = (
-            num_A * tree["base_weights"][A_index]
-            + num_C * tree["base_weights"][C_index]
-        ) / (num_A + num_C)
-        right_mean = (
-            num_B * tree["base_weights"][B_index]
-            + num_D * tree["base_weights"][D_index]
-        ) / (num_B + num_D)
+        left_total = num_A + num_C
+        right_total = num_B + num_D
 
-        # Subtract means from nodes
+        if left_total > 0:
+            left_mean = (
+                num_A * tree["base_weights"][A_index]
+                + num_C * tree["base_weights"][C_index]
+            ) / (num_A + num_C)
+        else:
+            left_mean = 0.0
+
+        if right_total > 0:
+            right_mean = (
+                num_B * tree["base_weights"][B_index]
+                + num_D * tree["base_weights"][D_index]
+            ) / (num_B + num_D)
+        else:
+            right_mean = 0.0
+
+        # Subtract means from leaf nodes
         tree["base_weights"][A_index] -= left_mean
         tree["base_weights"][B_index] -= right_mean
         tree["base_weights"][C_index] -= left_mean
         tree["base_weights"][D_index] -= right_mean
 
+        tree["split_conditions"][A_index] -= left_mean
+        tree["split_conditions"][B_index] -= right_mean
+        tree["split_conditions"][C_index] -= left_mean
+        tree["split_conditions"][D_index] -= right_mean
     return (left_mean, right_mean)
 
     # Use y_true??? or y_pred. Currently using y_pred
 
 
-def get_leaf_count(model, test_data, tree_index):
-    """
-    model: xb.train(...)
-    test_data: DMatrix
-    tree_index: 0-indexing int representing tree we're interested in
-
-    Returns dictionary:
-        {leaf_index: # samples in test_data that map to leaf_index in tree specified by tree_index}
-    """
-    # shape: (n_samples x n_trees)
-    leaf_indices = model.predict(test_data, pred_leaf=True)
-    # shape: (n_samples x 1)
-    leaf_indices = leaf_indices[:, tree_index]
-
-    # Loop through leaf_indices
-    leaf_counts = {}
-    for leaf_index in leaf_indices:
-        if leaf_index in leaf_counts:
-            leaf_counts[leaf_index] += 1
-        else:
-            leaf_counts[leaf_index] = 1
-
-    return leaf_counts
-
-
-def get_means(tree, leaf_groups, leaf_count):
-    """
-    tree: tree (dictionary) from loaded in file (dictionary)
-    leaf_groups: (list of lists)
-        Each sublist contains indices of leaves that we want to get the mean of
-    leaf_count (dictionary): {leaf_index: # samples in test_data that map to leaf_index in tree specified by tree_index}
-
-    Returns (dictionary): Key: Tuple of leaf indices, Value: Mean of data distribution over those leaf indices
-    """
-    mean_leaf_indices = {}
-
-    # loop through each group of indices
-    numerator = 0
-    num_data_points = 0
-
-    for group in leaf_groups:
-        for leaf_index in group:
-            leaf_val = tree["base_weights"][leaf_index]
-
-            num_data_points += leaf_count.get(leaf_index, 0)
-            numerator += leaf_val * leaf_count.get(leaf_index, 0)
-
-        group_tuple = tuple(group)
-        mean_leaf_indices[group_tuple] = numerator / num_data_points
-
-        # Reset
-        numerator = 0
-        num_data_points = 0
-
-    return mean_leaf_indices
-
-
-def subtract_means(tree, mean_leaf_indices):
-    """
-    tree: tree (dictionary) from loaded in file (dictionary)
-    leaf_indices: (dictionary). Key: Tuple of leaf indices, Value: Mean to be subtracted from each leaf in the tuple of leaf indices
-
-    Mutates tree to subtract means from corresponding leaves
-    """
-    for group, mean in mean_leaf_indices.items():
-        for leaf_index in group:
-            tree["base_weights"][leaf_index] -= mean
-            tree["split_conditions"][leaf_index] -= mean
-    return
-
-
 ##### PURIFICATION #####
-def fANOVA_2D(model, dtest, output_file_name="new_model.json"):
+def fANOVA_2D(
+    model, dtest, output_file_name="new_model.json", output_folder="loaded_models"
+):
     """
     model: xgb.train(...)
         saves as original_model.json
@@ -568,50 +444,229 @@ def fANOVA_2D(model, dtest, output_file_name="new_model.json"):
         Same predictions as model
         Mean along every axis is 0
     """
-    # FIRST SPLIT UP ALL DEPTH 2 TREES
-
-    # Get indices of f(x1, x2) trees
+    ##### SPLIT UP 7-NODE f(x1, x2) TREES INTO TWO, 5-NODE f(x1, x2) TREES#####
     tree_indices_x1x2 = get_filtered_tree_indices(model, (0, 1))
     model_file = get_model_file(model)
 
-    # Loop through and purify each f(x1, x2) tree
+    # Append equivalent 5-node trees
+    original_tree_list = model_file["learner"]["gradient_booster"]["model"]["trees"]
     for i in tree_indices_x1x2:
+        tree = original_tree_list[i]
+        if int(tree["tree_param"]["num_nodes"]) == 7:
+            new_trees = split_tree(tree)
+            original_tree_list.extend(new_trees)
+
+    # print(f"CHECKPOINT 1: original tree list: {original_tree_list}")
+    # Remove 7-node trees and correct for id numbers
+    new_tree_list = []
+    cur_id = 0
+    for tree in original_tree_list:
+        if int(tree["tree_param"]["num_nodes"]) == 5:
+            tree["id"] = cur_id
+            new_tree_list.append(tree)
+            cur_id += 1
+
+    # print(f"CHECKPOINT 2: NEW tree list: {new_tree_list}")
+
+    ##### PURIFY EACH f(x1, x2) TREE (each should be 5 nodes now) #####
+    new_tree_list_length = len(new_tree_list)
+
+    for i in range(new_tree_list_length):
         tree = model_file["learner"]["gradient_booster"]["model"]["trees"][i]
+        cur_id = len(new_tree_list)
+        new_trees = purify_five_nodes(tree, cur_id, dtest)
+        new_tree_list.extend(new_trees)
 
-        if len(tree["base_weights"]) == 5:
-            # Mutate (purify) tree and add correction trees
-            new_trees = purify_five_nodes(model_file, i, dtest)
-            model_file["learner"]["gradient_booster"]["model"]["trees"].extend(
-                new_trees
-            )
+    model_file["learner"]["gradient_booster"]["model"]["trees"] = new_tree_list
 
-            # Update model metadata
-            num_trees = len(model_file["learner"]["gradient_booster"]["model"]["trees"])
+    ##### UPDATE MODEL METADATA #####
+    num_trees = len(model_file["learner"]["gradient_booster"]["model"]["trees"])
 
-            model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
-                "num_trees"
-            ] = str(num_trees)
+    model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
+        "num_trees"
+    ] = str(num_trees)
+    model_file["learner"]["gradient_booster"]["model"]["iteration_indptr"] = list(
+        range(num_trees + 1)
+    )
+    model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [0] * num_trees
 
-            model_file["learner"]["gradient_booster"]["model"]["iteration_indptr"] = (
-                list(range(num_trees + 1))
-            )
-            model_file["learner"]["gradient_booster"]["model"]["tree_info"].extend(
-                [0] * len(new_trees)
-            )
-
-    # Save and return new model
-    new_model = get_model(model_file)
+    ##### SAVE AND RETURN #####
+    new_model = get_model(model_file, output_file_name, output_folder)
     return new_model
 
 
-def purify_five_nodes(
-    model_file, tree_index, test_data, folder="loaded_models", epsilon=1e-3, max_iter=10
+def get_new_five_node_tree_left(
+    root_split_index,
+    root_split_condition,
+    root_left_split_index,
+    root_left_split_condition,
+    leaf_val_left,
+    leaf_val_right,
+    new_id,
 ):
     """
-    model_file: loaded in file
-            with open("original_model.json", "r") as f:
-                original_model_file = json.load(f)
-    tree_index: index of the tree we are purifying
+    root_split_index: (int)
+    root_split_condition: (float)
+    root_left_split_index: (int)
+    root_left_split_condition: (float)
+    leaf_val_left: (float)
+    leaf_val_right: (float)
+    new_id: (int)
+
+    Returns five node tree (dictionary) skewed left
+    """
+    leaf_val_left = float(leaf_val_left)
+    leaf_val_right = float(leaf_val_right)
+    root_split_condition = float(root_split_condition)
+    root_left_split_condition = float(root_left_split_condition)
+
+    new_tree = {
+        "base_weights": [0.26570892, -0.63801795, 0.0, leaf_val_left, leaf_val_right],
+        "categories": [],
+        "categories_nodes": [],
+        "categories_segments": [],
+        "categories_sizes": [],
+        "default_left": [0, 0, 0, 0, 0],
+        "id": new_id,
+        "left_children": [1, 3, -1, -1, -1],
+        "loss_changes": [24.010551, 16.733408, 0.0, 0.0, 0.0],
+        "parents": [2147483647, 0, 0, 1, 1],
+        "right_children": [2, 4, -1, -1, -1],
+        "split_conditions": [
+            root_split_condition,
+            root_left_split_condition,
+            0.0,
+            leaf_val_left,
+            leaf_val_right,
+        ],
+        "split_indices": [root_split_index, root_left_split_index, 0, 0, 0],
+        "split_type": [0, 0, 0, 0, 0],
+        "sum_hessian": [7.0, 6.0, 1.0, 4.0, 2.0],
+        "tree_param": {
+            "num_deleted": "0",
+            "num_feature": "2",
+            "num_nodes": "5",
+            "size_leaf_vector": "1",
+        },
+    }
+
+    return new_tree
+
+
+def get_new_five_node_tree_right(
+    root_split_index,
+    root_split_condition,
+    root_right_split_index,
+    root_right_split_condition,
+    leaf_val_left,
+    leaf_val_right,
+    new_id,
+):
+    """
+    root_split_index: (int)
+    root_split_condition: (float)
+    root_right_split_index: (int)
+    root_right_split_condition: (float)
+    leaf_val_left: (float)
+    leaf_val_right: (float)
+    new_id: (int)
+
+    Returns five node tree (dictionary) skewed right
+    """
+    leaf_val_left = float(leaf_val_left)
+    leaf_val_right = float(leaf_val_right)
+    root_split_condition = float(root_split_condition)
+    root_right_split_condition = float(root_right_split_condition)
+
+    new_tree = {
+        "base_weights": [0.17801666, 0.0, 0.8273141, leaf_val_left, leaf_val_right],
+        "categories": [],
+        "categories_nodes": [],
+        "categories_segments": [],
+        "categories_sizes": [],
+        "default_left": [0, 0, 0, 0, 0],
+        "id": new_id,
+        "left_children": [1, -1, 3, -1, -1],
+        "loss_changes": [14.073252, 0.0, 4.4261208, 0.0, 0.0],
+        "parents": [2147483647, 0, 0, 2, 2],
+        "right_children": [2, -1, 4, -1, -1],
+        "split_conditions": [
+            root_split_condition,
+            0.0,
+            root_right_split_condition,
+            leaf_val_left,
+            leaf_val_right,
+        ],
+        "split_indices": [root_split_index, 0, root_right_split_index, 0, 0],
+        "split_type": [0, 0, 0, 0, 0],
+        "sum_hessian": [7.0, 1.0, 6.0, 4.0, 2.0],
+        "tree_param": {
+            "num_deleted": "0",
+            "num_feature": "2",
+            "num_nodes": "5",
+            "size_leaf_vector": "1",
+        },
+    }
+
+    return new_tree
+
+
+def split_tree(tree):
+    """
+    tree (dictionary): tree in model_file
+
+    Returns (list) of two new five node trees that sum to tree
+    """
+    ##### GET TREE INFO #####
+
+    # Depth 0
+    root_split_index = tree["split_indices"][0]
+    root_split_condition = tree["split_conditions"][0]
+
+    # Depth 1
+    root_left_index = tree["left_children"][0]
+    root_right_index = tree["right_children"][0]
+
+    root_left_split_index = tree["split_indices"][root_left_index]
+    root_left_split_condition = tree["split_conditions"][root_left_index]
+    root_right_split_index = tree["split_indices"][root_right_index]
+    root_right_split_condition = tree["split_conditions"][root_right_index]
+
+    # Depth 2
+    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
+    A_val, B_val, C_val, D_val = (
+        tree["base_weights"][A_index],
+        tree["base_weights"][B_index],
+        tree["base_weights"][C_index],
+        tree["base_weights"][D_index],
+    )
+
+    # Get new trees
+    tree_left = get_new_five_node_tree_left(
+        root_split_index,
+        root_split_condition,
+        root_left_split_index,
+        root_left_split_condition,
+        A_val,
+        B_val,
+        -1,
+    )
+    tree_right = get_new_five_node_tree_right(
+        root_split_index,
+        root_split_condition,
+        root_right_split_index,
+        root_right_split_condition,
+        C_val,
+        D_val,
+        -1,
+    )
+    return [tree_left, tree_right]
+
+
+def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
+    """
+    tree: loaded in tree (dictionary) from json file
+    cur_id: int
     test_data: DMatrix
     epsilon: convergence parameter
     max_iter: max number of iterations
@@ -620,12 +675,6 @@ def purify_five_nodes(
         Returns new trees
         Mutates model_file
     """
-    # Get parameters
-    trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
-    tree = trees[tree_index]
-    cur_id = len(trees)
-    new_trees = []
-
     ##### MODIFY ORIGINAL TREE #####
     depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
     # Index of leaf at depth 1
@@ -639,21 +688,24 @@ def purify_five_nodes(
         else:
             node_index = index
 
+    # Add additional split to tree
     split_node(tree, leaf_index, node_index)
 
     ##### PURIFY #####
+    new_trees = []
     iter_count = 0
     while iter_count < max_iter:
         total_change = 0
 
         ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
         mean_left, mean_right = get_subtract_means_seven_nodes(tree, 0, test_data)
+        total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
         split_index = tree["split_indices"][0]
         split_condition = tree["split_conditions"][0]
 
-        additional_tree = get_new_depth_one_tree(
+        additional_tree = get_new_three_node_tree(
             mean_left, mean_right, cur_id, split_index, split_condition
         )
 
@@ -661,32 +713,19 @@ def purify_five_nodes(
         cur_id += 1
 
         ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
-        new_model = get_model(model_file)
-
-        left_group = [
-            tree["left_children"][leaf_index],
-            tree["left_children"][node_index],
-        ]
-        right_group = [
-            tree["right_children"][leaf_index],
-            tree["right_children"][node_index],
-        ]
-        leaf_groups = [left_group, right_group]
-
-        leaf_count = get_leaf_count(new_model, test_data, tree_index)
-        mean_leaf_indices = get_means(tree, leaf_groups, leaf_count)
-        total_change += sum(abs(mean) for mean in mean_leaf_indices.values())
-        subtract_means(tree, mean_leaf_indices)
+        root_left_index = tree["left_children"][0]
 
         mean_left, mean_right = get_subtract_means_seven_nodes(
-            tree, tree["left_children"][0], test_data
+            tree, root_left_index, test_data
         )
+        # print((mean_left, mean_right))
+        total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
-        split_index = tree["split_indices"][0]
-        split_condition = tree["split_conditions"][0]
+        split_index = tree["split_indices"][root_left_index]
+        split_condition = tree["split_conditions"][root_left_index]
 
-        additional_tree = get_new_depth_one_tree(
+        additional_tree = get_new_three_node_tree(
             mean_left, mean_right, cur_id, split_index, split_condition
         )
 
@@ -697,47 +736,12 @@ def purify_five_nodes(
         if total_change < epsilon:
             break
         iter_count += 1
+        # print(iter_count) --> Usually converges around 6-7 iterations
 
     return new_trees
 
 
 if __name__ == "__main__":
-    # # Set seed for reproducibility
-    # np.random.seed(42)
-    # x1 = np.random.uniform(0, 100, 10)
-    # x2 = np.random.uniform(0, 100, 10)
-    # y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5
-
-    # X = pd.DataFrame({"x1": x1, "x2": x2})
-    # X_train, X_test, y_train, y_test = train_test_split(
-    #     X, y, test_size=0.3, random_state=42
-    # )
-
-    # # Convert to DMatrix format required by xgb.train
-    # dtrain = xgb.DMatrix(X_train, label=y_train)
-    # dtest = xgb.DMatrix(X_test, label=y_test)
-
-    # # Convert to DMatrix format required by xgb.train
-    # dtrain = xgb.DMatrix(X_train, label=y_train)
-    # dtest = xgb.DMatrix(X_test, label=y_test)
-
-    # # Parameters (note different parameter names)
-    # params = {
-    #     "max_depth": 2,
-    #     "learning_rate": 1.0,
-    #     "objective": "reg:squarederror",
-    #     "random_state": 42,
-    # }
-
-    # # Training with monitoring
-    # model = xgb.train(
-    #     params=params,
-    #     dtrain=dtrain,
-    #     num_boost_round=10,  # Equivalent to n_estimators
-    #     evals=[(dtrain, "train"), (dtest, "test")],
-    #     verbose_eval=True,
-    # )
-
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 10)
     x2 = np.random.uniform(0, 100, 10)
@@ -764,74 +768,12 @@ if __name__ == "__main__":
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=5,  # Equivalent to n_estimators
+        num_boost_round=100,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
 
-    new_model = filter_save_load(model, (0, 1), "original_model.json")
+    new_model = get_filtered_model(model, (0, 1), "original_model.json")
     print(f"original_prediction: {new_model.predict(dtest)}")
     purified_new_model = fANOVA_2D(new_model, dtest)
     print(f"purified_prediction: {purified_new_model.predict(dtest)}")
-
-    #### ONE ####
-    # model_file = get_model_file(model)
-
-    # new_model_file = purify_five_nodes(model_file, 0, dtest)
-    # print(model.predict(dtest))
-
-    # float_keys = ["base_weights", "split_conditions", "loss_changes", "sum_hessian"]
-    # for tree in model_file["learner"]["gradient_booster"]["model"]["trees"]:
-    #     for k in float_keys:
-    #         tree[k] = [float(v) for v in tree[k]]
-
-    # new_model = get_model(new_model_file)
-    # print(model.predict(dtest))
-    # print(new_model.predict(dtest))
-
-    # # TTL
-    # np.random.seed(42)
-
-    # # Generate 50 features
-    # n_features = 50
-    # n_samples = 1000
-    # X = pd.DataFrame(
-    #     {f"x{i}": np.random.uniform(0, 100, n_samples) for i in range(n_features)}
-    # )
-
-    # # Create nonlinear target using interactions of a few features
-    # y = 10 * X["x0"] + 5 * X["x1"] * X["x2"] + 3 * X["x3"] + 7 * X["x4"] * X["x5"]
-
-    # X_train, X_test, y_train, y_test = train_test_split(
-    #     X, y, test_size=0.3, random_state=42
-    # )
-
-    # # Convert to DMatrix format
-    # dtrain = xgb.DMatrix(X_train, label=y_train)
-    # dtest = xgb.DMatrix(X_test, label=y_test)
-
-    # # XGBoost parameters
-    # params = {
-    #     "max_depth": 2,
-    #     "learning_rate": 1.0,
-    #     "objective": "reg:squarederror",
-    #     "random_state": 42,
-    # }
-
-    # # Train model
-    # model2 = xgb.train(
-    #     params=params,
-    #     dtrain=dtrain,
-    #     num_boost_round=1000,
-    #     evals=[(dtrain, "train"), (dtest, "test")],
-    #     verbose_eval=False,
-    # )
-
-    # model2.save_model("model.json")
-    # with open("model.json", "r") as f:
-    #     model_2_file = json.load(model2)
-    # trees = model_2_file["learner"]["gradient_booster"]["model"]["trees"]
-    # for i, tree in enumerate(trees):
-    #     features = set(trees["split_indices"])
-    #     if len(features == 4):
-    #         print("YES")

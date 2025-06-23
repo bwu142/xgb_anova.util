@@ -23,6 +23,160 @@ import json
 import matplotlib.pyplot as plt
 
 
+def fANOVA():
+    tree_indices_x1x2 = get_filtered_tree_indices(model, (0, 1))
+    model_file = get_model_file(model)
+
+    for i in tree_indices_x1x2:
+        # Get current tree
+        trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
+        cur_id = len(trees)
+        tree = trees[i]
+
+        # Mutate (purify) tree and append correction trees to end of file
+        new_trees = purify_five_nodes(tree, cur_id, dtest)
+        model_file["learner"]["gradient_booster"]["model"]["trees"].extend(new_trees)
+
+
+def purify_five_nodes(
+    model_file, tree_index, test_data, folder="loaded_models", epsilon=1e-3, max_iter=10
+):
+    """
+    model_file: loaded in file
+            with open("original_model.json", "r") as f:
+                original_model_file = json.load(f)
+    tree_index: index of the tree we are purifying
+    test_data: DMatrix
+    epsilon: convergence parameter
+    max_iter: max number of iterations
+
+    Purifies one f(x1, x2) tree
+        Returns new trees
+        Mutates model_file
+    """
+    # Get parameters
+    trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
+    tree = trees[tree_index]
+    cur_id = len(trees)
+    new_trees = []
+
+    ##### MODIFY ORIGINAL TREE #####
+    depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
+    # Index of leaf at depth 1
+    leaf_index = -1
+    # Index of root node of subtree with two leaves
+    node_index = -1
+
+    for index in depth_one_node_indices:
+        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
+            leaf_index = index
+        else:
+            node_index = index
+
+    split_node(tree, leaf_index, node_index)
+
+    ##### PURIFY #####
+    iter_count = 0
+    while iter_count < max_iter:
+        total_change = 0
+
+        ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
+        # new_model = get_model(model_file)
+
+        # root_left_child_index = tree["left_children"][0]
+        # root_right_child_index = tree["right_children"][0]
+
+        # left_group = [
+        #     tree["left_children"][root_left_child_index],
+        #     tree["right_children"][root_left_child_index],
+        # ]
+        # right_group = [
+        #     tree["left_children"][root_right_child_index],
+        #     tree["right_children"][root_right_child_index],
+        # ]
+
+        # leaf_groups = [left_group, right_group]
+        # leaf_count = get_leaf_count(new_model, test_data, tree_index)
+        # mean_leaf_indices = get_means(tree, leaf_groups, leaf_count)
+        # total_change += sum(abs(mean) for mean in mean_leaf_indices.values())
+        # subtract_means(tree, mean_leaf_indices)
+
+        mean_left, mean_right = get_subtract_means_seven_nodes(tree, 0, test_data)
+
+        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+        # leaf_val_left = mean_leaf_indices[tuple(left_group)]
+        # leaf_val_right = mean_leaf_indices[tuple(right_group)]
+        # split_index = tree["split_indices"][0]
+        # split_condition = tree["split_conditions"][0]
+
+        # additional_tree = get_new_depth_one_tree(
+        #     leaf_val_left, leaf_val_right, cur_id, split_index, split_condition
+        # )
+        # new_trees.append(additional_tree)
+        # cur_id += 1
+
+        split_index = tree["split_indices"][0]
+        split_condition = tree["split_conditions"][0]
+
+        additional_tree = get_new_depth_one_tree(
+            mean_left, mean_right, cur_id, split_index, split_condition
+        )
+
+        new_trees.append(additional_tree)
+        cur_id += 1
+
+        ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
+        new_model = get_model(model_file)
+
+        left_group = [
+            tree["left_children"][leaf_index],
+            tree["left_children"][node_index],
+        ]
+        right_group = [
+            tree["right_children"][leaf_index],
+            tree["right_children"][node_index],
+        ]
+        leaf_groups = [left_group, right_group]
+
+        leaf_count = get_leaf_count(new_model, test_data, tree_index)
+        mean_leaf_indices = get_means(tree, leaf_groups, leaf_count)
+        total_change += sum(abs(mean) for mean in mean_leaf_indices.values())
+        subtract_means(tree, mean_leaf_indices)
+
+        mean_left, mean_right = get_subtract_means_seven_nodes(
+            tree, tree["left_children"][0], test_data
+        )
+
+        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+        # leaf_val_left = mean_leaf_indices[tuple(left_group)]
+        # leaf_val_right = mean_leaf_indices[tuple(right_group)]
+        # split_index = tree["split_indices"][node_index]
+        # split_condition = tree["split_condition"][node_index]
+
+        # additional_tree = get_new_depth_one_tree(
+        #     leaf_val_left, leaf_val_right, cur_id, split_index, split_condition
+        # )
+        # new_trees.append(additional_tree)
+        # cur_id += 1
+
+        split_index = tree["split_indices"][0]
+        split_condition = tree["split_conditions"][0]
+
+        additional_tree = get_new_depth_one_tree(
+            mean_left, mean_right, cur_id, split_index, split_condition
+        )
+
+        new_trees.append(additional_tree)
+        cur_id += 1
+
+        ##### CONVERGENCE CHECK #####
+        if total_change < epsilon:
+            break
+        iter_count += 1
+
+    return new_trees
+
+
 ##### PURIFY FIVE NODES #####
 def purify_five_nodes(model_file, tree_index, test_data, folder="loaded_models"):
     """
