@@ -470,12 +470,10 @@ def split_node(tree, leaf_index, node_index):
     """
     # properties of original leaf
     new_leaf_val = float(tree["base_weights"][leaf_index])
-    leaf_hessian = float(tree["sum_hessian"][leaf_index])
-    leaf_loss = float(tree["loss_changes"][leaf_index])
 
     # indices of new leaf nodes
-    new_left_leaf_index = len(tree["base_weights"])  # 5
-    new_right_leaf_index = new_left_leaf_index + 1  # 6
+    new_left_leaf_index = len(tree["base_weights"])
+    new_right_leaf_index = new_left_leaf_index + 1
 
     # Add two new leaf nodes
     tree["base_weights"].extend([new_leaf_val, new_leaf_val])
@@ -486,9 +484,9 @@ def split_node(tree, leaf_index, node_index):
 
     tree["parents"].extend([leaf_index, leaf_index])
     tree["default_left"].extend([0, 0])
-    tree["loss_changes"].extend([leaf_loss / 2, leaf_loss / 2])
+    tree["loss_changes"].extend([0.0, 0.0])
     tree["split_type"].extend([0, 0])
-    tree["sum_hessian"].extend([leaf_hessian / 2, leaf_hessian / 2])
+    tree["sum_hessian"].extend([0.0, 0.0])
 
     # Update original leaf node into a split node
     tree["base_weights"][leaf_index] = 0
@@ -508,20 +506,24 @@ def split_node(tree, leaf_index, node_index):
     return
 
 
-def get_subtract_means_seven_nodes(tree, node_index, test_data):
+def get_and_subtract_means_seven_nodes(tree, node_axis_index, dataset):
     """
-    tree: tree (dictionary) from loaded in file (dictionary)
-    node_index (int): index of node we're interested in
-    test_data: DMatrix
+    Args:
+        tree (dictionary): tree from model_file
+        node_axis_index (int): index of node we're interested in, tells us axis to integrate on
+            0 --> integrate on root node's split_condition-axis
+            else --> integrate on other axis
+        dataset (Dmatrix): dataset of points (x-vals)
 
-    Returns a tuple of (mean_1, mean_2):
-        mean_1: mean weighted by data distribution on left split
-        mean_2: mean weighted by data distribution on right split
+    Returns:
+        tuple: (mean_1, mean_2)
+            mean_1 (float): mean weighted by data distribution on left split
+            mean_2 (float): mean weighted by data distribution on right split
 
     Mutates tree such that means are subtracted from corresponding leaves
     """
-    # Extract test_data as numpy array
-    X = test_data.get_data()
+    # Extract dataset as numpy array
+    X = dataset.get_data()
     if hasattr(X, "toarray"):
         X = X.toarray()
 
@@ -558,7 +560,7 @@ def get_subtract_means_seven_nodes(tree, node_index, test_data):
                 num_D += 1
 
     # Split by root index (AB vs. CD)
-    if node_index == 0:
+    if node_axis_index == 0:
         left_total = num_A + num_B
         right_total = num_C + num_D
 
@@ -620,23 +622,23 @@ def get_subtract_means_seven_nodes(tree, node_index, test_data):
         tree["split_conditions"][B_index] -= right_mean
         tree["split_conditions"][C_index] -= left_mean
         tree["split_conditions"][D_index] -= right_mean
-    return (left_mean, right_mean)
 
-    # Use y_true??? or y_pred. Currently using y_pred
+    return (left_mean, right_mean)
 
 
 ##### PURIFICATION #####
-def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
+def purify_five_nodes(tree, cur_id, dataset, epsilon=1e-1, max_iter=10):
     """
-    tree: loaded in tree (dictionary) from json file
-    cur_id: int
-    test_data: DMatrix
-    epsilon: convergence parameter
-    max_iter: max number of iterations
+    Args:
+        tree (dictionary): tree from model_file
+        cur_id (int)
+        dataset (DMatrix): dataset of points (x-vals)
+        epsilon (float): if change is less than epsilon, END EARLY
+        max_iter (int): max number of iterations
 
-    Purifies one f(x1, x2) tree
-        Returns new trees
-        Mutates model_file
+    Returns:
+        List: list of tree (dictionaries) that are 1-feature compensations for purification
+    Mutates "tree" such that its axes have a mean of 0 (purification)
     """
     ##### MODIFY ORIGINAL TREE #####
     depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
@@ -654,14 +656,14 @@ def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
     # Add additional split to tree
     split_node(tree, leaf_index, node_index)
 
-    ##### PURIFY #####
+    ##### PURIFY ORIGINAL TREE #####
     new_trees = []
     iter_count = 0
     while iter_count < max_iter:
         total_change = 0
 
         ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
-        mean_left, mean_right = get_subtract_means_seven_nodes(tree, 0, test_data)
+        mean_left, mean_right = get_and_subtract_means_seven_nodes(tree, 0, dataset)
         total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
@@ -677,11 +679,9 @@ def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
 
         ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
         root_left_index = tree["left_children"][0]
-
-        mean_left, mean_right = get_subtract_means_seven_nodes(
-            tree, root_left_index, test_data
+        mean_left, mean_right = get_and_subtract_means_seven_nodes(
+            tree, root_left_index, dataset
         )
-        # print((mean_left, mean_right))
         total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
@@ -705,17 +705,19 @@ def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
 
 
 def fANOVA_2D(
-    model, dtest, output_file_name="new_model.json", output_folder="loaded_models"
+    model, dataset, output_file_name="new_model.json", output_folder="loaded_models"
 ):
     """
-    model: xgb.train(...)
-        saves as original_model.json
-        max_depth = 2
-        y = f(x1, x2)
+    Args:
+        model (Booster): max_depth = 2
+        dataset (DMatrix): set of points (x-vals)
+        output_file_name (string):
+        output_folder (string):
 
-    Returns new model that is the fANOVA Decomposition of model
-        Same predictions as model
-        Mean along every axis is 0
+    Returns:
+        Booster: new model that is the fANOVA Decomposition of model
+            Same predictions as model
+            Mean along each axis is 0
     """
     ##### SPLIT UP 7-NODE f(x1, x2) TREES INTO TWO, 5-NODE f(x1, x2) TREES#####
     tree_indices_x1x2 = get_filtered_tree_indices(model, (0, 1))
@@ -729,7 +731,6 @@ def fANOVA_2D(
             new_trees = split_tree(tree)
             original_tree_list.extend(new_trees)
 
-    # print(f"CHECKPOINT 1: original tree list: {original_tree_list}")
     # Remove 7-node trees and correct for id numbers
     new_tree_list = []
     cur_id = 0
@@ -739,15 +740,14 @@ def fANOVA_2D(
             new_tree_list.append(tree)
             cur_id += 1
 
-    # print(f"CHECKPOINT 2: NEW tree list: {new_tree_list}")
-
     ##### PURIFY EACH f(x1, x2) TREE (each should be 5 nodes now) #####
     new_tree_list_length = len(new_tree_list)
+    trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
 
     for i in range(new_tree_list_length):
-        tree = model_file["learner"]["gradient_booster"]["model"]["trees"][i]
+        tree = trees[i]
         cur_id = len(new_tree_list)
-        new_trees = purify_five_nodes(tree, cur_id, dtest)
+        new_trees = purify_five_nodes(tree, cur_id, dataset)
         new_tree_list.extend(new_trees)
 
     model_file["learner"]["gradient_booster"]["model"]["trees"] = new_tree_list
@@ -795,12 +795,16 @@ if __name__ == "__main__":
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=100,  # Equivalent to n_estimators
+        num_boost_round=10,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
 
-    new_model = get_filtered_model(model, (0, 1), "original_model.json")
-    print(f"original_prediction: {new_model.predict(dtest)}")
-    purified_new_model = fANOVA_2D(new_model, dtest)
-    print(f"purified_prediction: {purified_new_model.predict(dtest)}")
+    # new_model = get_filtered_model(model, (0, 1), "original_model.json")
+    # print(f"original_prediction: {new_model.predict(dtest)}")
+    # purified_new_model = fANOVA_2D(new_model, dtrain)
+    # print(f"purified_prediction: {purified_new_model.predict(dtest)}")
+
+    print(model.predict(dtest))
+    purified_model = fANOVA_2D(model, dtrain)
+    print(purified_model.predict(dtest))
