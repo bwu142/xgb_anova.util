@@ -11,7 +11,7 @@ import os
 import plotly.graph_objects as go
 
 
-##### SAVE AND LOAD HELPER FUNCTIONS #####
+##### TREE HELPER FUNCTIONS #####
 def get_model_file(
     model, input_file_name="original_model.json", folder="loaded_models"
 ):
@@ -65,7 +65,6 @@ def get_model(model_file, output_file_name="new_model.json", folder="loaded_mode
     return new_model
 
 
-##### TREE HELPER FUNCTIONS #####
 def get_bias(model, input_file_name="original_model.json", folder="loaded_models"):
     """
     Args:
@@ -94,17 +93,16 @@ def get_leaf_indices_seven_nodes(tree):
     # Right Subtree
     root_right_index = tree["right_children"][0]
     root_right_left_index = tree["left_children"][root_right_index]
-    root_right_left_index = tree["right_children"][root_right_index]
+    root_right_right_index = tree["right_children"][root_right_index]
 
     return [
         root_left_left_index,
         root_left_right_index,
         root_right_left_index,
-        root_right_left_index,
+        root_right_right_index,
     ]
 
 
-##### TREE FILTERING #####
 def get_filtered_tree_indices(model, feature_tuple=None):
     """
     Args:
@@ -153,6 +151,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
     return filtered_tree_indices
 
 
+##### TREE FILTERING #####
 def get_filtered_model(
     model, feature_tuple=None, output_file_name="new_model.json", folder="loaded_models"
 ):
@@ -170,13 +169,13 @@ def get_filtered_model(
 
     ##### FILTER TREES #####
     new_trees = []
-    cur_id = 0
+    id_count = 0
     for i in tree_indices:
         new_trees.append(
             original_model_file["learner"]["gradient_booster"]["model"]["trees"][i]
         )
-        new_trees[cur_id]["id"] = cur_id
-        cur_id += 1
+        new_trees[id_count]["id"] = id_count
+        id_count += 1
     original_model_file["learner"]["gradient_booster"]["model"]["trees"] = new_trees
 
     ##### UPDATE MODEL METADATA #####
@@ -224,21 +223,25 @@ def get_filtered_model_list(model, feature_tuple_list=None, output_file_name_lis
     return output_models
 
 
-##### PURIFICATION HELPER FUNCTIONS #####
-def get_new_three_node_tree(
-    leaf_val_left, leaf_val_right, new_id, split_index, split_condition
+##### CREATING NEW TREES #####
+def new_three_node_tree(
+    leaf_val_left, leaf_val_right, split_index, split_condition, new_id
 ):
     """
-    leaf_val_left: float
-    leaf_val_right: float
-    new_id: int
-    split_index: int (0-indexing)
-    split_condition: float
+    Args:
+        leaf_val_left (float):
+        leaf_val_right (float):
+        split_index (int): 0-indexing
+        split_condition (float):
+        new_id (int):
 
-    Returns a depth one tree (one split along feature specified by split_index) with leaf_vals
+    Returns:
+        dictionary: 2-node, depth-1 tree
     """
     leaf_val_left = float(leaf_val_left)
     leaf_val_right = float(leaf_val_right)
+    split_condition = float(split_condition)
+
     new_tree = {
         "base_weights": [-0.12812316, leaf_val_left, leaf_val_right],
         "categories": [],
@@ -265,13 +268,205 @@ def get_new_three_node_tree(
     return new_tree
 
 
+def new_five_node_tree_left(
+    root_split_index,
+    root_split_condition,
+    root_left_split_index,
+    root_left_split_condition,
+    leaf_val_left,
+    leaf_val_right,
+    new_id,
+):
+    """
+    Args:
+        root_split_index (int):
+        root_split_condition (float):
+        root_left_split_index (int):
+        root_left_split_condition (float):
+        leaf_val_left (float):
+        leaf_Val_right (float):
+        new_id (int):
+
+    Returns:
+        dictionary: five node tree skewed left
+            left child of root node is the root of a depth-1 subtree
+            right child of root node is a leaf of value 0.0
+    """
+    leaf_val_left = float(leaf_val_left)
+    leaf_val_right = float(leaf_val_right)
+    root_split_condition = float(root_split_condition)
+    root_left_split_condition = float(root_left_split_condition)
+
+    new_tree = {
+        "base_weights": [0.26570892, -0.63801795, 0.0, leaf_val_left, leaf_val_right],
+        "categories": [],
+        "categories_nodes": [],
+        "categories_segments": [],
+        "categories_sizes": [],
+        "default_left": [0, 0, 0, 0, 0],
+        "id": new_id,
+        "left_children": [1, 3, -1, -1, -1],
+        "loss_changes": [24.010551, 16.733408, 0.0, 0.0, 0.0],
+        "parents": [2147483647, 0, 0, 1, 1],
+        "right_children": [2, 4, -1, -1, -1],
+        "split_conditions": [
+            root_split_condition,
+            root_left_split_condition,
+            0.0,
+            leaf_val_left,
+            leaf_val_right,
+        ],
+        "split_indices": [root_split_index, root_left_split_index, 0, 0, 0],
+        "split_type": [0, 0, 0, 0, 0],
+        "sum_hessian": [7.0, 6.0, 1.0, 4.0, 2.0],
+        "tree_param": {
+            "num_deleted": "0",
+            "num_feature": "2",
+            "num_nodes": "5",
+            "size_leaf_vector": "1",
+        },
+    }
+
+    return new_tree
+
+
+def new_five_node_tree_right(
+    root_split_index,
+    root_split_condition,
+    root_right_split_index,
+    root_right_split_condition,
+    leaf_val_left,
+    leaf_val_right,
+    new_id,
+):
+    """
+    root_split_index: (int)
+    root_split_condition: (float)
+    root_right_split_index: (int)
+    root_right_split_condition: (float)
+    leaf_val_left: (float)
+    leaf_val_right: (float)
+    new_id: (int)
+
+    Returns five node tree (dictionary) skewed right
+
+    Args:
+        root_split_index (int):
+        root_split_condition (float):
+        root_right_split_index (int):
+        root_right_split_condition (float):
+        leaf_val_left (float):
+        leaf_Val_right (float):
+        new_id (int):
+
+    Returns:
+        dictionary: five node tree skewed right
+            left child of root node is a leaf of value 0.0
+            right child of root node is the root of a depth-1 subtree
+    """
+    leaf_val_left = float(leaf_val_left)
+    leaf_val_right = float(leaf_val_right)
+    root_split_condition = float(root_split_condition)
+    root_right_split_condition = float(root_right_split_condition)
+
+    new_tree = {
+        "base_weights": [0.17801666, 0.0, 0.8273141, leaf_val_left, leaf_val_right],
+        "categories": [],
+        "categories_nodes": [],
+        "categories_segments": [],
+        "categories_sizes": [],
+        "default_left": [0, 0, 0, 0, 0],
+        "id": new_id,
+        "left_children": [1, -1, 3, -1, -1],
+        "loss_changes": [14.073252, 0.0, 4.4261208, 0.0, 0.0],
+        "parents": [2147483647, 0, 0, 2, 2],
+        "right_children": [2, -1, 4, -1, -1],
+        "split_conditions": [
+            root_split_condition,
+            0.0,
+            root_right_split_condition,
+            leaf_val_left,
+            leaf_val_right,
+        ],
+        "split_indices": [root_split_index, 0, root_right_split_index, 0, 0],
+        "split_type": [0, 0, 0, 0, 0],
+        "sum_hessian": [7.0, 1.0, 6.0, 4.0, 2.0],
+        "tree_param": {
+            "num_deleted": "0",
+            "num_feature": "2",
+            "num_nodes": "5",
+            "size_leaf_vector": "1",
+        },
+    }
+
+    return new_tree
+
+
+##### DEPTH-2 TREE PURIFICATION HELPER FUNCTIONS #####
+def split_tree(tree):
+    """
+    Args:
+        tree (dictinoary): tree in model_file
+
+    Returns:
+        list of dictionaries: list of two new 5-node trees that sum to "tree"
+    """
+    ##### GET TREE INFO #####
+
+    # Depth 0
+    root_split_index = tree["split_indices"][0]
+    root_split_condition = tree["split_conditions"][0]
+
+    # Depth 1
+    root_left_index = tree["left_children"][0]
+    root_right_index = tree["right_children"][0]
+
+    root_left_split_index = tree["split_indices"][root_left_index]
+    root_left_split_condition = tree["split_conditions"][root_left_index]
+    root_right_split_index = tree["split_indices"][root_right_index]
+    root_right_split_condition = tree["split_conditions"][root_right_index]
+
+    # Depth 2
+    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
+    A_val, B_val, C_val, D_val = (
+        tree["base_weights"][A_index],
+        tree["base_weights"][B_index],
+        tree["base_weights"][C_index],
+        tree["base_weights"][D_index],
+    )
+
+    # Get new trees
+    tree_left = new_five_node_tree_left(
+        root_split_index,
+        root_split_condition,
+        root_left_split_index,
+        root_left_split_condition,
+        A_val,
+        B_val,
+        -1,
+    )
+    tree_right = new_five_node_tree_right(
+        root_split_index,
+        root_split_condition,
+        root_right_split_index,
+        root_right_split_condition,
+        C_val,
+        D_val,
+        -1,
+    )
+    return [tree_left, tree_right]
+
+
 def split_node(tree, leaf_index, node_index):
     """
-    tree: tree (dictionary) from loaded in file (dictionary)
-    leaf_index: index of leaf that will be replaced with a split node (int)
-    node_index: index of node that contains info of what to split leaf with (int)
+    Args:
+        tree (dictionary): tree from model_file
+        leaf_index (int): index of leaf that will be replaced with a split node
+        node_index (int): index of node that our added split will replicate
 
-    Mutates tree by changing leaf to a depth-1 split
+    Returns:
+        None
+    Mutates tree by changing leaf_index to a depth-1 split mimicing split at node_index
     """
     # properties of original leaf
     new_leaf_val = float(tree["base_weights"][leaf_index])
@@ -431,6 +626,84 @@ def get_subtract_means_seven_nodes(tree, node_index, test_data):
 
 
 ##### PURIFICATION #####
+def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
+    """
+    tree: loaded in tree (dictionary) from json file
+    cur_id: int
+    test_data: DMatrix
+    epsilon: convergence parameter
+    max_iter: max number of iterations
+
+    Purifies one f(x1, x2) tree
+        Returns new trees
+        Mutates model_file
+    """
+    ##### MODIFY ORIGINAL TREE #####
+    depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
+    # Index of leaf at depth 1
+    leaf_index = -1
+    # Index of root node of subtree with two leaves
+    node_index = -1
+
+    for index in depth_one_node_indices:
+        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
+            leaf_index = index
+        else:
+            node_index = index
+
+    # Add additional split to tree
+    split_node(tree, leaf_index, node_index)
+
+    ##### PURIFY #####
+    new_trees = []
+    iter_count = 0
+    while iter_count < max_iter:
+        total_change = 0
+
+        ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
+        mean_left, mean_right = get_subtract_means_seven_nodes(tree, 0, test_data)
+        total_change += abs(mean_left) + abs(mean_right)
+
+        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+        split_index = tree["split_indices"][0]
+        split_condition = tree["split_conditions"][0]
+
+        additional_tree = new_three_node_tree(
+            mean_left, mean_right, split_index, split_condition, cur_id
+        )
+
+        new_trees.append(additional_tree)
+        cur_id += 1
+
+        ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
+        root_left_index = tree["left_children"][0]
+
+        mean_left, mean_right = get_subtract_means_seven_nodes(
+            tree, root_left_index, test_data
+        )
+        # print((mean_left, mean_right))
+        total_change += abs(mean_left) + abs(mean_right)
+
+        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
+        split_index = tree["split_indices"][root_left_index]
+        split_condition = tree["split_conditions"][root_left_index]
+
+        additional_tree = new_three_node_tree(
+            mean_left, mean_right, split_index, split_condition, cur_id
+        )
+
+        new_trees.append(additional_tree)
+        cur_id += 1
+
+        ##### CONVERGENCE CHECK #####
+        if total_change < epsilon:
+            break
+        iter_count += 1
+        # print(iter_count) --> Usually converges around 6-7 iterations
+
+    return new_trees
+
+
 def fANOVA_2D(
     model, dtest, output_file_name="new_model.json", output_folder="loaded_models"
 ):
@@ -493,252 +766,6 @@ def fANOVA_2D(
     ##### SAVE AND RETURN #####
     new_model = get_model(model_file, output_file_name, output_folder)
     return new_model
-
-
-def get_new_five_node_tree_left(
-    root_split_index,
-    root_split_condition,
-    root_left_split_index,
-    root_left_split_condition,
-    leaf_val_left,
-    leaf_val_right,
-    new_id,
-):
-    """
-    root_split_index: (int)
-    root_split_condition: (float)
-    root_left_split_index: (int)
-    root_left_split_condition: (float)
-    leaf_val_left: (float)
-    leaf_val_right: (float)
-    new_id: (int)
-
-    Returns five node tree (dictionary) skewed left
-    """
-    leaf_val_left = float(leaf_val_left)
-    leaf_val_right = float(leaf_val_right)
-    root_split_condition = float(root_split_condition)
-    root_left_split_condition = float(root_left_split_condition)
-
-    new_tree = {
-        "base_weights": [0.26570892, -0.63801795, 0.0, leaf_val_left, leaf_val_right],
-        "categories": [],
-        "categories_nodes": [],
-        "categories_segments": [],
-        "categories_sizes": [],
-        "default_left": [0, 0, 0, 0, 0],
-        "id": new_id,
-        "left_children": [1, 3, -1, -1, -1],
-        "loss_changes": [24.010551, 16.733408, 0.0, 0.0, 0.0],
-        "parents": [2147483647, 0, 0, 1, 1],
-        "right_children": [2, 4, -1, -1, -1],
-        "split_conditions": [
-            root_split_condition,
-            root_left_split_condition,
-            0.0,
-            leaf_val_left,
-            leaf_val_right,
-        ],
-        "split_indices": [root_split_index, root_left_split_index, 0, 0, 0],
-        "split_type": [0, 0, 0, 0, 0],
-        "sum_hessian": [7.0, 6.0, 1.0, 4.0, 2.0],
-        "tree_param": {
-            "num_deleted": "0",
-            "num_feature": "2",
-            "num_nodes": "5",
-            "size_leaf_vector": "1",
-        },
-    }
-
-    return new_tree
-
-
-def get_new_five_node_tree_right(
-    root_split_index,
-    root_split_condition,
-    root_right_split_index,
-    root_right_split_condition,
-    leaf_val_left,
-    leaf_val_right,
-    new_id,
-):
-    """
-    root_split_index: (int)
-    root_split_condition: (float)
-    root_right_split_index: (int)
-    root_right_split_condition: (float)
-    leaf_val_left: (float)
-    leaf_val_right: (float)
-    new_id: (int)
-
-    Returns five node tree (dictionary) skewed right
-    """
-    leaf_val_left = float(leaf_val_left)
-    leaf_val_right = float(leaf_val_right)
-    root_split_condition = float(root_split_condition)
-    root_right_split_condition = float(root_right_split_condition)
-
-    new_tree = {
-        "base_weights": [0.17801666, 0.0, 0.8273141, leaf_val_left, leaf_val_right],
-        "categories": [],
-        "categories_nodes": [],
-        "categories_segments": [],
-        "categories_sizes": [],
-        "default_left": [0, 0, 0, 0, 0],
-        "id": new_id,
-        "left_children": [1, -1, 3, -1, -1],
-        "loss_changes": [14.073252, 0.0, 4.4261208, 0.0, 0.0],
-        "parents": [2147483647, 0, 0, 2, 2],
-        "right_children": [2, -1, 4, -1, -1],
-        "split_conditions": [
-            root_split_condition,
-            0.0,
-            root_right_split_condition,
-            leaf_val_left,
-            leaf_val_right,
-        ],
-        "split_indices": [root_split_index, 0, root_right_split_index, 0, 0],
-        "split_type": [0, 0, 0, 0, 0],
-        "sum_hessian": [7.0, 1.0, 6.0, 4.0, 2.0],
-        "tree_param": {
-            "num_deleted": "0",
-            "num_feature": "2",
-            "num_nodes": "5",
-            "size_leaf_vector": "1",
-        },
-    }
-
-    return new_tree
-
-
-def split_tree(tree):
-    """
-    tree (dictionary): tree in model_file
-
-    Returns (list) of two new five node trees that sum to tree
-    """
-    ##### GET TREE INFO #####
-
-    # Depth 0
-    root_split_index = tree["split_indices"][0]
-    root_split_condition = tree["split_conditions"][0]
-
-    # Depth 1
-    root_left_index = tree["left_children"][0]
-    root_right_index = tree["right_children"][0]
-
-    root_left_split_index = tree["split_indices"][root_left_index]
-    root_left_split_condition = tree["split_conditions"][root_left_index]
-    root_right_split_index = tree["split_indices"][root_right_index]
-    root_right_split_condition = tree["split_conditions"][root_right_index]
-
-    # Depth 2
-    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
-    A_val, B_val, C_val, D_val = (
-        tree["base_weights"][A_index],
-        tree["base_weights"][B_index],
-        tree["base_weights"][C_index],
-        tree["base_weights"][D_index],
-    )
-
-    # Get new trees
-    tree_left = get_new_five_node_tree_left(
-        root_split_index,
-        root_split_condition,
-        root_left_split_index,
-        root_left_split_condition,
-        A_val,
-        B_val,
-        -1,
-    )
-    tree_right = get_new_five_node_tree_right(
-        root_split_index,
-        root_split_condition,
-        root_right_split_index,
-        root_right_split_condition,
-        C_val,
-        D_val,
-        -1,
-    )
-    return [tree_left, tree_right]
-
-
-def purify_five_nodes(tree, cur_id, test_data, epsilon=1e-1, max_iter=10):
-    """
-    tree: loaded in tree (dictionary) from json file
-    cur_id: int
-    test_data: DMatrix
-    epsilon: convergence parameter
-    max_iter: max number of iterations
-
-    Purifies one f(x1, x2) tree
-        Returns new trees
-        Mutates model_file
-    """
-    ##### MODIFY ORIGINAL TREE #####
-    depth_one_node_indices = [tree["left_children"][0], tree["right_children"][0]]
-    # Index of leaf at depth 1
-    leaf_index = -1
-    # Index of root node of subtree with two leaves
-    node_index = -1
-
-    for index in depth_one_node_indices:
-        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
-            leaf_index = index
-        else:
-            node_index = index
-
-    # Add additional split to tree
-    split_node(tree, leaf_index, node_index)
-
-    ##### PURIFY #####
-    new_trees = []
-    iter_count = 0
-    while iter_count < max_iter:
-        total_change = 0
-
-        ##### INTEGRATE OVER AXIS 1: ROOT NODE FEATURE #####
-        mean_left, mean_right = get_subtract_means_seven_nodes(tree, 0, test_data)
-        total_change += abs(mean_left) + abs(mean_right)
-
-        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
-        split_index = tree["split_indices"][0]
-        split_condition = tree["split_conditions"][0]
-
-        additional_tree = get_new_three_node_tree(
-            mean_left, mean_right, cur_id, split_index, split_condition
-        )
-
-        new_trees.append(additional_tree)
-        cur_id += 1
-
-        ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
-        root_left_index = tree["left_children"][0]
-
-        mean_left, mean_right = get_subtract_means_seven_nodes(
-            tree, root_left_index, test_data
-        )
-        # print((mean_left, mean_right))
-        total_change += abs(mean_left) + abs(mean_right)
-
-        ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
-        split_index = tree["split_indices"][root_left_index]
-        split_condition = tree["split_conditions"][root_left_index]
-
-        additional_tree = get_new_three_node_tree(
-            mean_left, mean_right, cur_id, split_index, split_condition
-        )
-
-        new_trees.append(additional_tree)
-        cur_id += 1
-
-        ##### CONVERGENCE CHECK #####
-        if total_change < epsilon:
-            break
-        iter_count += 1
-        # print(iter_count) --> Usually converges around 6-7 iterations
-
-    return new_trees
 
 
 if __name__ == "__main__":
