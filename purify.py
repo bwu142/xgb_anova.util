@@ -65,44 +65,61 @@ def get_model(model_file, output_file_name="new_model.json", folder="loaded_mode
     return new_model
 
 
-def get_bias(model, input_file_name="original_model.json", folder="loaded_models"):
+def get_ordered_leaves(tree, node_index, leaf_indices=None, leaf_vals=None):
     """
     Args:
-        model (Booster):
+        tree (dictionary): tree from model_file
+    node_index (int): index of (initially root) node in tree
+    leaf_indices (list):
 
     Returns:
-        float: model's bias/base score
+        list: list of leaf_indices (ints) in left to right order
+            preorder traversal (depth first, left before right)
     """
-    bias_model_file = get_model_file(model, input_file_name, folder)
-    return float(bias_model_file["learner"]["learner_model_param"]["base_score"])
+    if leaf_indices is None:
+        leaf_indices, leaf_vals = [], []
+
+    l = tree["left_children"][node_index]
+    r = tree["right_children"][node_index]
+
+    # node_index is a leaf
+    if l == -1 and r == -1:
+        leaf_indices.append(node_index)
+        leaf_vals.append(tree["base_weights"][node_index])
+    else:
+        get_ordered_leaves(tree, l, leaf_indices, leaf_vals)
+        get_ordered_leaves(tree, r, leaf_indices, leaf_vals)
+
+    return (leaf_indices, leaf_vals)
 
 
-def get_leaf_indices_seven_nodes(tree):
+def traverse_tree(tree, sample):
     """
     Args:
-        tree (dictinoary): 7-node, depth-2 tree in model_file with 4 leaves
-
+        tree (dictionary): tree from model_file
+        sample (numpy array): Feature values for the sample
     Returns:
-        list of ints: list of four leaf indices in order from left to right
+        int: index of the leaf node that sample falls into
     """
-    # Left Subtree
-    root_left_index = tree["left_children"][0]
-    root_left_left_index = tree["left_children"][root_left_index]
-    root_left_right_index = tree["right_children"][root_left_index]
+    node_index = 0
+    while True:
+        l = tree["left_children"][node_index]
+        r = tree["right_children"][node_index]
 
-    # Right Subtree
-    root_right_index = tree["right_children"][0]
-    root_right_left_index = tree["left_children"][root_right_index]
-    root_right_right_index = tree["right_children"][root_right_index]
+        # leaf
+        if l == -1 and r == -1:
+            return node_index
 
-    return [
-        root_left_left_index,
-        root_left_right_index,
-        root_right_left_index,
-        root_right_right_index,
-    ]
+        # other
+        split_index = tree["split_indices"][node_index]
+        split_condition = tree["split_conditions"][node_index]
+        if sample[split_index] < split_condition:
+            node_index = l
+        else:
+            node_index = r
 
 
+##### TREE FILTERING #####
 def get_filtered_tree_indices(model, feature_tuple=None):
     """
     Args:
@@ -151,7 +168,6 @@ def get_filtered_tree_indices(model, feature_tuple=None):
     return filtered_tree_indices
 
 
-##### TREE FILTERING #####
 def get_filtered_model(
     model, feature_tuple=None, output_file_name="new_model.json", folder="loaded_models"
 ):
@@ -264,6 +280,7 @@ def new_three_node_tree(
             "num_nodes": "3",
             "size_leaf_vector": "1",
         },
+        "is_compensation": True,
     }
     return new_tree
 
@@ -427,7 +444,8 @@ def split_tree(tree):
     root_right_split_condition = tree["split_conditions"][root_right_index]
 
     # Depth 2
-    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
+    A_index, B_index, C_index, D_index = get_ordered_leaves(tree, 0)[0]
+
     A_val, B_val, C_val, D_val = (
         tree["base_weights"][A_index],
         tree["base_weights"][B_index],
@@ -527,37 +545,15 @@ def get_and_subtract_means_seven_nodes(tree, node_axis_index, dataset):
     if hasattr(X, "toarray"):
         X = X.toarray()
 
-    # Get specific leaf indices
-    A_index, B_index, C_index, D_index = get_leaf_indices_seven_nodes(tree)
-
     # Get number of test points that fall into each leaf
-    num_A = 0
-    num_B = 0
-    num_C = 0
-    num_D = 0
-
-    root_split_index = tree["split_indices"][0]
-    root_split_condition = tree["split_conditions"][0]
-
-    root_left_index = tree["left_children"][0]
-    root_right_index = tree["right_children"][0]
-
-    root_left_split_index = tree["split_indices"][root_left_index]
-    root_left_split_condition = tree["split_conditions"][root_left_index]
-    root_right_split_index = tree["split_indices"][root_right_index]
-    root_right_split_condition = tree["split_conditions"][root_right_index]
+    A_index, B_index, C_index, D_index = get_ordered_leaves(tree, 0)[0]
+    num_leaves = {A_index: 0, B_index: 0, C_index: 0, D_index: 0}
 
     for test_point in X:
-        if test_point[root_split_index] < root_split_condition:
-            if test_point[root_left_split_index] < root_left_split_condition:
-                num_A += 1
-            else:
-                num_B += 1
-        else:
-            if test_point[root_right_split_index] < root_right_split_condition:
-                num_C += 1
-            else:
-                num_D += 1
+        leaf_index = traverse_tree(tree, test_point)
+        num_leaves[leaf_index] += 1
+
+    num_A, num_B, num_C, num_D = [num for num in num_leaves.values()]
 
     # Split by root index (AB vs. CD)
     if node_axis_index == 0:
@@ -627,11 +623,10 @@ def get_and_subtract_means_seven_nodes(tree, node_axis_index, dataset):
 
 
 ##### PURIFICATION #####
-def purify_five_nodes(tree, cur_id, dataset, epsilon=1e-1, max_iter=10):
+def purify_five_nodes_two_features(tree, dataset, epsilon=1e-1, max_iter=10):
     """
     Args:
         tree (dictionary): tree from model_file
-        cur_id (int)
         dataset (DMatrix): dataset of points (x-vals)
         epsilon (float): if change is less than epsilon, END EARLY
         max_iter (int): max number of iterations
@@ -671,11 +666,10 @@ def purify_five_nodes(tree, cur_id, dataset, epsilon=1e-1, max_iter=10):
         split_condition = tree["split_conditions"][0]
 
         additional_tree = new_three_node_tree(
-            mean_left, mean_right, split_index, split_condition, cur_id
+            mean_left, mean_right, split_index, split_condition, -1
         )
 
         new_trees.append(additional_tree)
-        cur_id += 1
 
         ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
         root_left_index = tree["left_children"][0]
@@ -689,11 +683,10 @@ def purify_five_nodes(tree, cur_id, dataset, epsilon=1e-1, max_iter=10):
         split_condition = tree["split_conditions"][root_left_index]
 
         additional_tree = new_three_node_tree(
-            mean_left, mean_right, split_index, split_condition, cur_id
+            mean_left, mean_right, split_index, split_condition, -1
         )
 
         new_trees.append(additional_tree)
-        cur_id += 1
 
         ##### CONVERGENCE CHECK #####
         if total_change < epsilon:
@@ -702,6 +695,50 @@ def purify_five_nodes(tree, cur_id, dataset, epsilon=1e-1, max_iter=10):
         # print(iter_count) --> Usually converges around 6-7 iterations
 
     return new_trees
+
+
+def purify_one_feature(tree, dataset):
+    """
+    Args:
+        tree (dictionary): tree (max_depth of 2) from model_file
+        dataset (DMatrix):
+    Returns:
+        float: correction mean prediction float to add to base_score
+    Mutates tree such that mean prediction is zero across dataset points
+        Subtracts mean prediction from all leaves
+    """
+    # Extract test data as numpy array
+    X = dataset.get_data()
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+
+    # Get tree and leaf info
+    leaf_indices, _ = get_ordered_leaves(tree, 0)
+    leaf_count = {leaf_index: 0 for leaf_index in leaf_indices}
+    sample_count = 0
+
+    # Count samples per leaf
+    for test_point in X:
+        leaf_index = traverse_tree(tree, test_point)
+        sample_count += 1
+        leaf_count[leaf_index] += 1
+
+    # Edge Case
+    if sample_count == 0:
+        return 0.0
+
+    # Get mean prediction
+    sum = 0
+    for leaf_idx, num_samples in leaf_count.items():
+        sum += tree["base_weights"][leaf_idx] * num_samples
+    mean = sum / sample_count
+
+    # Subtract mean from leaves
+    for leaf_index in leaf_indices:
+        tree["base_weights"][leaf_index] -= mean
+        tree["split_conditions"][leaf_index] -= mean
+
+    return mean
 
 
 def fANOVA_2D(
@@ -723,34 +760,41 @@ def fANOVA_2D(
     tree_indices_x1x2 = get_filtered_tree_indices(model, (0, 1))
     model_file = get_model_file(model)
 
-    # Append equivalent 5-node trees
-    original_tree_list = model_file["learner"]["gradient_booster"]["model"]["trees"]
-    for i in tree_indices_x1x2:
-        tree = original_tree_list[i]
-        if int(tree["tree_param"]["num_nodes"]) == 7:
-            new_trees = split_tree(tree)
-            original_tree_list.extend(new_trees)
+    tree_list_all = model_file["learner"]["gradient_booster"]["model"]["trees"]
+    tree_list_one_feature = []
+    tree_list_two_features = []
 
-    # Remove 7-node trees and correct for id numbers
-    new_tree_list = []
-    cur_id = 0
-    for tree in original_tree_list:
-        if int(tree["tree_param"]["num_nodes"]) == 5:
-            tree["id"] = cur_id
-            new_tree_list.append(tree)
-            cur_id += 1
+    # Append equivalent 5-node trees
+    for i, tree in enumerate(tree_list_all):
+        # two-feature tree
+        if i in tree_indices_x1x2:
+            if int(tree["tree_param"]["num_nodes"]) == 7:
+                new_trees = split_tree(tree)
+                tree_list_two_features.extend(new_trees)
+            else:
+                tree_list_two_features.append(tree)
+        # one-feature tree
+        else:
+            tree_list_one_feature.append(tree)
 
     ##### PURIFY EACH f(x1, x2) TREE (each should be 5 nodes now) #####
-    new_tree_list_length = len(new_tree_list)
-    trees = model_file["learner"]["gradient_booster"]["model"]["trees"]
+    for tree in tree_list_two_features:
+        new_trees = purify_five_nodes_two_features(tree, dataset)
+        tree_list_one_feature.extend(new_trees)
 
-    for i in range(new_tree_list_length):
-        tree = trees[i]
-        cur_id = len(new_tree_list)
-        new_trees = purify_five_nodes(tree, cur_id, dataset)
-        new_tree_list.extend(new_trees)
+    ##### PURIFY EACH f(x1), f(x2), TREE #####
+    new_base_score = float(model_file["learner"]["learner_model_param"]["base_score"])
 
-    model_file["learner"]["gradient_booster"]["model"]["trees"] = new_tree_list
+    for tree in tree_list_one_feature:
+        # if tree.get("is_compensation"):
+        #     continue
+        mean = purify_one_feature(tree, dataset)
+        new_base_score += mean
+
+    ##### UPDATE TREES #####
+    model_file["learner"]["gradient_booster"]["model"]["trees"] = (
+        tree_list_two_features + tree_list_one_feature
+    )
 
     ##### UPDATE MODEL METADATA #####
     num_trees = len(model_file["learner"]["gradient_booster"]["model"]["trees"])
@@ -763,8 +807,14 @@ def fANOVA_2D(
     )
     model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [0] * num_trees
 
+    for i, tree in enumerate(
+        model_file["learner"]["gradient_booster"]["model"]["trees"]
+    ):
+        tree["id"] = i
+
     ##### SAVE AND RETURN #####
     new_model = get_model(model_file, output_file_name, output_folder)
+    new_model.set_param({"base_score": new_base_score})
     return new_model
 
 
@@ -795,16 +845,17 @@ if __name__ == "__main__":
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=10,  # Equivalent to n_estimators
+        num_boost_round=20,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
 
-    # new_model = get_filtered_model(model, (0, 1), "original_model.json")
-    # print(f"original_prediction: {new_model.predict(dtest)}")
-    # purified_new_model = fANOVA_2D(new_model, dtrain)
-    # print(f"purified_prediction: {purified_new_model.predict(dtest)}")
+    filtered_model = get_filtered_model(model, (0, 1), "filtered_model.json")
+    print(f"original_prediction (0, 1): {filtered_model.predict(dtest)}")
+    purified_new_model = fANOVA_2D(filtered_model, dtrain)
+    print(f"purified_prediction: {purified_new_model.predict(dtest)}")
 
-    print(model.predict(dtest))
+    model_file = get_model_file(model, "original_model.json")
+    print(f"original_prediction: {model.predict(dtest)}")
     purified_model = fANOVA_2D(model, dtrain)
-    print(purified_model.predict(dtest))
+    print(f"purified_prediction: {purified_model.predict(dtest)}")
