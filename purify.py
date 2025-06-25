@@ -129,8 +129,8 @@ def get_filtered_tree_indices(model, feature_tuple=None):
             (0, 1) --> trees only with x1 AND x2 splits | f(x1, x2)
 
     Returns:
-        list of ints: list of tree indices with splits corresopnding to feature_tuple
-            [0, 1, 4] means that trees 0, 1, and 4 in "model" contain the exact features in "feature_tuple"
+        set of ints: set of tree indices with splits corresopnding to feature_tuple
+            {0, 1, 4} means that trees 0, 1, and 4 in "model" contain the exact features in "feature_tuple"
     """
 
     def get_features_used(node, features=None):
@@ -153,7 +153,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
 
     # tree_dump returns trees as JSON strings ['{'node_id': 0, 'depth' = 1, etc.}', '{}', etc.]
     tree_dump = model.get_dump(dump_format="json")
-    filtered_tree_indices = []
+    filtered_tree_indices = set()
 
     # For each tree, check for set equality (features_used vs. feature_tuple)
     for (
@@ -164,7 +164,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
         features_used = get_features_used(tree)
         features_needed_set = set(feature_tuple)
         if features_used == features_needed_set:
-            filtered_tree_indices.append(i)
+            filtered_tree_indices.add(i)
     return filtered_tree_indices
 
 
@@ -221,19 +221,22 @@ def get_filtered_model_list(model, feature_tuple_list=None, output_file_name_lis
     output_file_name_list (list of strings): corresponding list of file names to be saved, ending with json
 
     Returns:
-        list: list of new_models corresponding to each feature_tuple in "feature_tuple_list"
+        list: list of new_models (Booster objects) corresponding to each feature_tuple in "feature_tuple_list"
     """
+    # Default file names
     if output_file_name_list is None:
         output_file_name_list = [
             "model" + str(i) + ".json" for i in range(1, len(feature_tuple_list) + 1)
         ]
+
+    # Add new models
     output_models = []
     for i in range(len(output_file_name_list)):
         output_file_name = output_file_name_list[i]
-        features_tuple = output_file_name_list[i]
+        features_tuple = feature_tuple_list[i]
 
         output_models.append(
-            get_filtered_model(model, output_file_name, features_tuple)
+            get_filtered_model(model, features_tuple, output_file_name)
         )
 
     return output_models
@@ -741,7 +744,7 @@ def purify_one_feature(tree, dataset):
     return mean
 
 
-def fANOVA_2D(
+def purify_2D(
     model, dataset, output_file_name="new_model.json", output_folder="loaded_models"
 ):
     """
@@ -757,17 +760,26 @@ def fANOVA_2D(
             Mean along each axis is 0
     """
     ##### SPLIT UP 7-NODE f(x1, x2) TREES INTO TWO, 5-NODE f(x1, x2) TREES#####
-    tree_indices_x1x2 = get_filtered_tree_indices(model, (0, 1))
+    tree_indices_x1x2x3 = (
+        get_filtered_tree_indices(model, (0, 1))
+        | get_filtered_tree_indices(model, (1, 2))
+        | get_filtered_tree_indices(model, (0, 2))
+        | get_filtered_tree_indices(model, (0, 1, 2))
+    )
     model_file = get_model_file(model)
 
     tree_list_all = model_file["learner"]["gradient_booster"]["model"]["trees"]
+    bias_tree_vals = []
     tree_list_one_feature = []
     tree_list_two_features = []
 
     # Append equivalent 5-node trees
     for i, tree in enumerate(tree_list_all):
+        # 0-feature tree
+        if len(tree["base_weights"]) == 1:
+            bias_tree_vals.append(tree["base_weights"][0])
         # two-feature tree
-        if i in tree_indices_x1x2:
+        elif i in tree_indices_x1x2x3:
             if int(tree["tree_param"]["num_nodes"]) == 7:
                 new_trees = split_tree(tree)
                 tree_list_two_features.extend(new_trees)
@@ -788,13 +800,20 @@ def fANOVA_2D(
     for tree in tree_list_one_feature:
         # if tree.get("is_compensation"):
         #     continue
+
         mean = purify_one_feature(tree, dataset)
         new_base_score += mean
+
+    ##### ADD 0-feature trees to bias #####
+    for bias_val in bias_tree_vals:
+        new_base_score += bias_val
 
     ##### UPDATE TREES #####
     model_file["learner"]["gradient_booster"]["model"]["trees"] = (
         tree_list_two_features + tree_list_one_feature
     )
+
+    model_file["learner"]["learner_model_param"]["base_score"] = str(new_base_score)
 
     ##### UPDATE MODEL METADATA #####
     num_trees = len(model_file["learner"]["gradient_booster"]["model"]["trees"])
@@ -818,13 +837,48 @@ def fANOVA_2D(
     return new_model
 
 
+def fANOVA_2D(model, dataset):
+    """
+    Args:
+        model (Booster): model from model_file (max_depth = 2)
+        dataset (DMatrix)
+    Returns:
+        dictionary:
+            key (string): "bias", "x1", "x2", "x1x2", "x1x3", etc.
+            value (Booster): model
+    """
+    model_dict = {}
+
+    # Purify Model
+    purified_model = purify_2D(model, dataset)
+    purified_model_file = get_model_file(model)
+
+    # Filter Model
+    filtered_model_list = get_filtered_model_list(
+        purified_model, [(0,), (1,), (2,), (0, 1), (1, 2), (0, 2), (0, 1, 2)]
+    )
+    bias = float(purified_model_file["learner"]["learner_model_param"]["base_score"])
+
+    # note: could simplify with recursion
+    model_names = ["x1", "x2", "x3", "x1x2", "x2x3", "x1x3", "x1x2x3"]
+
+    for model_name, model in zip(model_names, filtered_model_list):
+        # Reset bias to 0 (don't want to overcount)
+        model.set_param({"base_score": 0.0})
+
+        model_dict[model_name] = model
+
+    return model_dict, bias
+
+
 if __name__ == "__main__":
     np.random.seed(42)
     x1 = np.random.uniform(0, 100, 10)
     x2 = np.random.uniform(0, 100, 10)
-    y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5
+    x3 = np.random.uniform(0, 100, 10)
+    y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
 
-    X = pd.DataFrame({"x1": x1, "x2": x2})
+    X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42
     )
@@ -845,17 +899,20 @@ if __name__ == "__main__":
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=20,  # Equivalent to n_estimators
+        num_boost_round=1000,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
 
     filtered_model = get_filtered_model(model, (0, 1), "filtered_model.json")
     print(f"original_prediction (0, 1): {filtered_model.predict(dtest)}")
-    purified_new_model = fANOVA_2D(filtered_model, dtrain)
+    purified_new_model = purify_2D(filtered_model, dtrain)
     print(f"purified_prediction: {purified_new_model.predict(dtest)}")
 
     model_file = get_model_file(model, "original_model.json")
     print(f"original_prediction: {model.predict(dtest)}")
-    purified_model = fANOVA_2D(model, dtrain)
+    purified_model = purify_2D(model, dtrain)
     print(f"purified_prediction: {purified_model.predict(dtest)}")
+
+    model_dict, bias = fANOVA_2D(model, dtrain)
+    print(model_dict["x1x2x3"])
