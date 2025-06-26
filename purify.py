@@ -843,32 +843,56 @@ def fANOVA_2D(model, dataset):
         model (Booster): model from model_file (max_depth = 2)
         dataset (DMatrix)
     Returns:
+        purified_model (Booster)
         dictionary:
             key (string): "bias", "x1", "x2", "x1x2", "x1x3", etc.
             value (Booster): model
+        bias (float)
     """
-    model_dict = {}
+    # Get all features
+    feature_names = dataset.feature_names
+    num_features = len(feature_names)
+    feature_indices = list(range(num_features))
+
+    # Get all subsets
+    def all_combinations(indices_list):
+        """
+        Recursively generate all non-empty subsets of a list of indices.
+        Args:
+            indices_list (list): list of ints representing indices (0-indexing) of features in dataset
+        Returns:
+            list: list of feature_tuples
+
+        """
+        if not indices_list:
+            return []
+        first, rest = indices_list[0], indices_list[1:]
+        subsets_without_first = all_combinations(rest)
+        subsets_with_first = [
+            [first] + list(subset) for subset in subsets_without_first
+        ]
+        # Add the singleton [first]
+        result = [[first]] + subsets_with_first + subsets_without_first
+        return [tuple(sub) for sub in result]
 
     # Purify Model
     purified_model = purify_2D(model, dataset)
     purified_model_file = get_model_file(model)
-
-    # Filter Model
-    filtered_model_list = get_filtered_model_list(
-        purified_model, [(0,), (1,), (2,), (0, 1), (1, 2), (0, 2), (0, 1, 2)]
-    )
     bias = float(purified_model_file["learner"]["learner_model_param"]["base_score"])
 
-    # note: could simplify with recursion
-    model_names = ["x1", "x2", "x3", "x1x2", "x2x3", "x1x3", "x1x2x3"]
+    # Filter Model
+    all_nonempty_subsets = all_combinations(feature_indices)
+    filtered_model_list = get_filtered_model_list(purified_model, all_nonempty_subsets)
 
-    for model_name, model in zip(model_names, filtered_model_list):
+    model_dict = {}
+
+    for subset, model in zip(all_nonempty_subsets, filtered_model_list):
         # Reset bias to 0 (don't want to overcount)
         model.set_param({"base_score": 0.0})
+        name = "".join(f"x{i+1}" for i in sorted(subset))
+        model_dict[name] = model
 
-        model_dict[model_name] = model
-
-    return model_dict, bias
+    return purified_model, model_dict, bias
 
 
 if __name__ == "__main__":
@@ -914,5 +938,6 @@ if __name__ == "__main__":
     purified_model = purify_2D(model, dtrain)
     print(f"purified_prediction: {purified_model.predict(dtest)}")
 
-    model_dict, bias = fANOVA_2D(model, dtrain)
-    print(model_dict["x1x2x3"])
+    _, model_dict, bias = fANOVA_2D(model, dtrain)
+    model_x1x2x3 = model_dict["x1x2"]
+    print(model_x1x2x3.predict(dtest))
