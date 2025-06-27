@@ -144,11 +144,17 @@ def get_filtered_tree_indices(model, feature_tuple=None):
         if features is None:
             features = set()
         if "split" in node:
-            features.add(int(node["split"][1:]) - 1)
+            split_str = node["split"]
+            # Add valid splits
+            if split_str[0] == "f":
+                split_index = int(split_str[1:])
+                if split_index >= 0:
+                    features.add(split_index)
             # Only recurse if not a leaf
             if "children" in node:
                 for child in node["children"]:
                     get_features_used(child, features)
+
         return features
 
     # tree_dump returns trees as JSON strings ['{'node_id': 0, 'depth' = 1, etc.}', '{}', etc.]
@@ -165,6 +171,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
         features_needed_set = set(feature_tuple)
         if features_used == features_needed_set:
             filtered_tree_indices.add(i)
+        # print(f"Tree {i}: uses features {features_used}")
     return filtered_tree_indices
 
 
@@ -850,8 +857,7 @@ def fANOVA_2D(model, dataset):
         bias (float)
     """
     # Get all features
-    feature_names = dataset.feature_names
-    num_features = len(feature_names)
+    num_features = dataset.num_col()
     feature_indices = list(range(num_features))
 
     # Get all subsets
@@ -882,7 +888,10 @@ def fANOVA_2D(model, dataset):
 
     # Filter Model
     all_nonempty_subsets = all_combinations(feature_indices)
-    filtered_model_list = get_filtered_model_list(purified_model, all_nonempty_subsets)
+    print(all_nonempty_subsets)
+    filtered_model_list = get_filtered_model_list(
+        purified_model, all_nonempty_subsets, [str(tup) for tup in all_nonempty_subsets]
+    )
 
     model_dict = {}
 
@@ -891,6 +900,8 @@ def fANOVA_2D(model, dataset):
         model.set_param({"base_score": 0.0})
         name = "".join(f"x{i+1}" for i in sorted(subset))
         model_dict[name] = model
+
+    # print(model_dict)
 
     return purified_model, model_dict, bias
 
@@ -939,5 +950,4 @@ if __name__ == "__main__":
     print(f"purified_prediction: {purified_model.predict(dtest)}")
 
     _, model_dict, bias = fANOVA_2D(model, dtrain)
-    model_x1x2x3 = model_dict["x1x2"]
-    print(model_x1x2x3.predict(dtest))
+    model_x1 = model_dict["x1x2"]

@@ -236,15 +236,25 @@ def plot_contour_two_features(
 def setup_model():
     # Setup
     np.random.seed(42)
-    x1 = np.random.uniform(0, 100, 10)
-    x2 = np.random.uniform(0, 100, 10)
-    x3 = np.random.uniform(0, 100, 10)
-    y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
+    # x1 = np.random.uniform(0, 100, 10)
+    # x2 = np.random.uniform(0, 100, 10)
+    # x3 = np.random.uniform(0, 100, 10)
+    # y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
 
-    X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
+    n = 1 << 16
+    rho = 0
+    b1, b2, b3 = 3, 2, 10
+    cov_mat = np.identity(2)
+    cov_mat[0, 1] = cov_mat[1, 0] = rho
+    X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+    y = yf(X[:, 0], X[:, 1])
+
+    # X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42
     )
+
     dtrain = xgb.DMatrix(X_train, label=y_train)
     dtest = xgb.DMatrix(X_test, label=y_test)
 
@@ -257,7 +267,7 @@ def setup_model():
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=10000,  # Equivalent to n_estimators
+        num_boost_round=1000,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
@@ -325,7 +335,7 @@ def test_equal_predictions_1():
     purified_model = purify.purify_2D(model, dtrain)
     purified_model_prediction = purified_model.predict(random_input_set)
 
-    assert np.allclose(model_prediction, purified_model_prediction, atol=1)
+    assert np.allclose(model_prediction, purified_model_prediction, atol=0.1)
 
 
 def test_equal_predictions_2():
@@ -345,11 +355,16 @@ def test_equal_predictions_2():
     num_samples = random_input_set.num_row()
     purified_prediction_sum = np.zeros(num_samples)
 
+    # Make into new function
     for purified_model in purified_model_dict.values():
         purified_prediction_sum += purified_model.predict(random_input_set)
     purified_prediction_sum += bias
 
-    assert np.allclose(purified_prediction_sum, purified_model_prediction, atol=1)
+    print(purified_model_prediction[:10])
+    print(purified_prediction_sum[:10])
+    assert np.allclose(
+        purified_prediction_sum, purified_model_prediction, atol=1e-9, rtol=0
+    )
 
 
 def test_equal_predictions_3():
@@ -369,7 +384,9 @@ def test_equal_predictions_3():
         purified_prediction_sum += purified_model.predict(random_input_set)
     purified_prediction_sum += bias
 
-    assert np.allclose(purified_prediction_sum, model_prediction, atol=0.1)
+    print(purified_prediction_sum[:10])
+    print(model_prediction[:10])
+    assert np.allclose(purified_prediction_sum, model_prediction, atol=1e-9)
 
 
 def test_independence_1():
@@ -529,3 +546,4 @@ if __name__ == "__main__":
     pass
     # 6
     # 7
+    test_equal_predictions_2()
