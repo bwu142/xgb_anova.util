@@ -852,10 +852,11 @@ def fANOVA_2D(model, dataset):
     Returns:
         purified_model (Booster)
         dictionary:
-            key (string): "bias", "x1", "x2", "x1x2", "x1x3", etc.
+            key (tuple): (0,), (1,), (0, 1), (0, 2), etc.
             value (Booster): model
         bias (float)
     """
+    model_file = get_model_file(model, "THEOG.json")
     # Get all features
     num_features = dataset.num_col()
     feature_indices = list(range(num_features))
@@ -888,7 +889,6 @@ def fANOVA_2D(model, dataset):
 
     # Filter Model
     all_nonempty_subsets = all_combinations(feature_indices)
-    print(all_nonempty_subsets)
     filtered_model_list = get_filtered_model_list(
         purified_model, all_nonempty_subsets, [str(tup) for tup in all_nonempty_subsets]
     )
@@ -898,8 +898,7 @@ def fANOVA_2D(model, dataset):
     for subset, model in zip(all_nonempty_subsets, filtered_model_list):
         # Reset bias to 0 (don't want to overcount)
         model.set_param({"base_score": 0.0})
-        name = "".join(f"x{i+1}" for i in sorted(subset))
-        model_dict[name] = model
+        model_dict[subset] = model
 
     # print(model_dict)
 
@@ -950,4 +949,4 @@ if __name__ == "__main__":
     print(f"purified_prediction: {purified_model.predict(dtest)}")
 
     _, model_dict, bias = fANOVA_2D(model, dtrain)
-    model_x1 = model_dict["x1x2"]
+    model_x1 = model_dict[(0, 1)]
