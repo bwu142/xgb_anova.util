@@ -200,9 +200,9 @@ def test_independence(X, y):
             assert len(set(prediction)) == 1
 
 
-######################
-#### JULY 1 TESTS ####
-######################
+####################
+#### MAIN TESTS ####
+####################
 def setup_model(X, y):
     # Setup
     np.random.seed(42)
@@ -274,6 +274,76 @@ def test_equal_predictions(X, y):
     assert np.allclose(purified_prediction_sum, model_prediction, atol=0.01)
 
 
+def test_purified_mean_zero(X, y, epsilon=1, C=0):
+    """
+    Check that f(x1, x2) component has mean 0 over a slice of data where one feature is ~ constant
+    """
+    ##### SETUP #####
+    model, dtrain, dtest = setup_model(X, y)
+    _, purified_components, _ = purify.fANOVA_2D(model, dtrain)
+
+    # Convert to DataFrame
+    X_train = dtrain.get_data()
+    if hasattr(X_train, "toarray"):
+        X_train = X_train.toarray()
+    n_points, n_features = X_train.shape
+
+    ##### CONSTRUCT TEST SET WITH FIXED FEATURE #####
+
+    for varied_index in range(n_features):
+        for fixed_index in range(n_features):
+            if fixed_index == varied_index:
+                continue
+            mask = np.abs(X_train[:, fixed_index] - C) < epsilon
+            if not np.any(mask):
+                print(f"No points found with x{fixed_index+1} ≈ {C}")
+                continue
+
+            X_slice = X_train[mask]
+            d_slice = xgb.DMatrix(X_slice)
+
+            tuple_key = tuple(sorted([varied_index, fixed_index]))
+            pred = purified_components[tuple_key].predict(d_slice)
+            mean_val = np.mean(pred)
+            print(
+                f"mean f_{varied_index},{fixed_index} with x{fixed_index} ≈ {C}: {mean_val:.4f}"
+            )
+            assert np.abs(mean_val) < 0.1
+
+
+def test_purity(X, y):
+    """
+    for training data, check the means of component functions are zero. Check the means with the test data - the means should be close to zero.
+    """
+
+    TRAIN_ATOL = 1e-2  # very tight for training data
+    TEST_ATOL = 1e-2  # looser for unseen data
+
+    def _zero_mean_assert(vec, atol, name, split):
+        """Assert that `vec` is mean-zero within tolerance."""
+        m = vec.mean()
+        print(m)
+        assert np.allclose(
+            m, 0.0, atol=atol
+        ), f"{name} not pure on {split} set: mean={m:.3e}, tol={atol}"
+
+    # Build data & model
+    model, dtrain, dtest = setup_model(X, y)
+
+    # Decompose
+    _, comp_dict, _ = purify.fANOVA_2D(model, dtrain)  # returns {name: Booster}, bias
+
+    # Loop through every component (skip bias)
+    for name, booster in comp_dict.items():
+        # Training set
+        pred_train = booster.predict(dtrain)
+        _zero_mean_assert(pred_train, TRAIN_ATOL, name, "train")
+
+        # # Test set
+        # pred_test = booster.predict(dtest)
+        # _zero_mean_assert(pred_test, TEST_ATOL, name, "test")
+
+
 def test_plot_1(X, y):
     """
     Plot uniform distrubition on 1 factor (main effects vs. grid)
@@ -336,34 +406,9 @@ def test_plot_1(X, y):
     fig.show()
 
 
-def test_purified_mean(X, y):
-    """check mean of x1, x2 is 0, setting x1 to a constant in the distribution, and vice versa"""
-    ##### SETUP #####
-    model, dtrain, dtest = setup_model(X, y)
-    _, purified_components, _ = purify.fANOVA_2D(model, dtrain)
-
-    # Convert to DataFrame
-    X_train = dtrain.get_data()
-    if hasattr(X_train, "toarray"):
-        X_train = X_train.toarray()
-    n_points, n_features = X.shape
-
-    ##### CONSTRUCT TEST SET WITH FIXED FEATURE #####
-    C = 5
-    for i in range(n_features):
-        X_modified = X_train.copy()
-        for j in range(n_features):
-            if j != i:
-                X_modified[:, j] = C
-        d_modified = xgb.DMatrix(X_modified)
-        y_pred = purified_components[(i,)].predict(d_modified)
-        mean_val = np.mean(y_pred)
-
-        atol = 0.01
-        assert np.abs(mean_val) < atol
-
-
-def test_plot_all(X_dataframe, y_true):
+def test_plot_all(
+    X_dataframe, y_true, epsilon=0.05, C=0, x_min=-0.5, x_max=0.5, y_min=-0.5, y_max=0.5
+):
     """
     Plot Main Effects and Interactions (fixing one feature) over data distribution
     """
@@ -375,9 +420,9 @@ def test_plot_all(X_dataframe, y_true):
     X_sample = dtrain.get_data()
     if hasattr(X_sample, "toarray"):
         X_sample = X_sample.toarray()
-    n_features = X_sample.shape[1]
+    n_points, n_features = X_sample.shape
 
-    ##### PLOT AGAINST DISTRIBUTION #####
+    ##### PLOT BIAS AND 1-FEATURE AGAINST DISTRIBUTION #####
 
     # Plot bias and main effects
     fig = go.Figure()
@@ -412,7 +457,7 @@ def test_plot_all(X_dataframe, y_true):
 
     # Final layout
     fig.update_layout(
-        title="fANOVA Bias & 1st-Order Main Effects",
+        title="fANOVA Bias & 1st-Order Main Effects (Against Distribution)",
         xaxis_title="Feature Value",
         yaxis_title="Main Effect Prediction",
         template="plotly_white",
@@ -422,168 +467,145 @@ def test_plot_all(X_dataframe, y_true):
     )
     fig.show()
 
+    ##### PLOT 2-FEATURE AGAINST DISTRIBUTION (HOLDING ONE-VAR CONSTANT) #####
     # Grid settings
-    x_vals = np.linspace(-4, 4, 300)
     fixed_vals = [-1, -0.5, 0, 0.5, 1]
-
-    # Plot Main Effects and Interactions
     for feature_tuple, feature_model in purified_components.items():
-        # Interaction terms
-        if len(feature_tuple) == 2:
-            i1, i2 = feature_tuple
+        # Interaction terms only
+        if len(feature_tuple) != 2:
+            continue
 
-            # Fix x1, vary x2
-            fig1 = go.Figure()
-            for x1_fixed in fixed_vals:
-                # Create input matrix: vary x2, hold x1 fixed
-                X_grid = np.zeros((len(x_vals), n_features))
-                X_grid[:, i1] = x1_fixed
-                X_grid[:, i2] = x_vals
-                dgrid = xgb.DMatrix(X_grid)
+        index_1, index_2 = feature_tuple
+        name_1, name_2 = f"x{index_1 + 1}", f"x{index_2 + 1}"
 
-                y_pred = feature_model.predict(dgrid)
+        # Fix x1, vary x2
+        fig1 = go.Figure()
+        for C in fixed_vals:
+            mask = np.abs(X_sample[:, index_1] - C) < epsilon
+            if mask.sum() < 10:  # too few points → skip
+                print("Not enough points!")
+                continue
+            X_slice = X_sample[mask]
+            x2_vals = X_slice[:, index_2]
+            y_pred = feature_model.predict(xgb.DMatrix(X_slice))
 
-                fig1.add_trace(
-                    go.Scatter(
-                        x=x_vals,
-                        y=y_pred,
-                        mode="lines",
-                        name=f"{feature_tuple}: x1={x1_fixed}",
-                    )
-                )
-            fig1.update_layout(
-                title=f"{feature_tuple}: Vary x2 with Fixed x1",
-                xaxis_title=f"x{i2 + 1}",
-                yaxis_title=f"f_{(i1 + 1, i2 + 1)}(x1, x2)",
-                template="plotly_white",
-                width=900,
-                height=500,
+            sorted_index = np.argsort(x2_vals)
+            x_sorted = x2_vals[sorted_index]
+            y_sorted = y_pred[sorted_index]
+
+            fig1.add_trace(
+                go.Scatter(x=x_sorted, y=y_sorted, mode="lines", name=f"{name_1}≈{C}")
             )
-            fig1.show()
 
-            # Fix x2, vary x1
-            fig2 = go.Figure()
-            for x2_fixed in fixed_vals:
-                X_grid = np.zeros((len(x_vals), n_features))
-                X_grid[:, i1] = x_vals
-                X_grid[:, i2] = x2_fixed
-                dgrid = xgb.DMatrix(X_grid)
-                y_pred = feature_model.predict(dgrid)
+        fig1.update_layout(
+            title=f"{name_1},{name_2}: vary {name_2}  |  {name_1}≈C (ε={epsilon})",
+            xaxis_title=name_2,
+            yaxis_title=f"f_{name_1},{name_2}",
+            template="plotly_white",
+            width=900,
+            height=500,
+        )
+        fig1.update_xaxes(range=[x_min, x_max])
+        fig1.update_yaxes(range=[y_min, y_max])
+        fig1.show()
 
-                fig2.add_trace(
-                    go.Scatter(
-                        x=x_vals,
-                        y=y_pred,
-                        mode="lines",
-                        name=f"{feature_tuple}: x2={x2_fixed}",
-                    )
-                )
+        # Fix x2, vary x1
+        fig2 = go.Figure()
+        for C in fixed_vals:
+            mask = np.abs(X_sample[:, index_2] - C) < epsilon
+            if mask.sum() < 10:  # too few points → skip
+                print("Not enough points!")
+                continue
+            X_slice = X_sample[mask]
+            x1_vals = X_slice[:, index_1]
+            y_pred = feature_model.predict(xgb.DMatrix(X_slice))
 
-            fig2.update_layout(
-                title=f"{feature_tuple}: Vary x1 with Fixed x2",
-                xaxis_title=f"x{i1 + 1}",
-                yaxis_title=f"f_{(i1 + 1, i2 + 1)}(x1, x2) --> Prediction",
-                template="plotly_white",
-                width=900,
-                height=500,
+            sorted_index = np.argsort(x1_vals)
+            x_sorted = x1_vals[sorted_index]
+            y_sorted = y_pred[sorted_index]
+
+            fig2.add_trace(
+                go.Scatter(x=x_sorted, y=y_sorted, mode="lines", name=f"{name_2}≈{C}")
             )
-            fig2.show()
-
-
-def test_purity(X, y):
-    """
-    for training data, check the means of component functions are zero. Check the means with the test data - the means should be close to zero.
-    """
-
-    TRAIN_ATOL = 1e-2  # very tight for training data
-    TEST_ATOL = 1e-2  # looser for unseen data
-
-    def _zero_mean_assert(vec, atol, name, split):
-        """Assert that `vec` is mean-zero within tolerance."""
-        m = vec.mean()
-        print(m)
-        assert np.allclose(
-            m, 0.0, atol=atol
-        ), f"{name} not pure on {split} set: mean={m:.3e}, tol={atol}"
-
-    # Build data & model
-    model, dtrain, dtest = setup_model(X, y)
-
-    # Decompose
-    _, comp_dict, _ = purify.fANOVA_2D(model, dtrain)  # returns {name: Booster}, bias
-
-    # Loop through every component (skip bias)
-    for name, booster in comp_dict.items():
-        # Training set
-        pred_train = booster.predict(dtrain)
-        _zero_mean_assert(pred_train, TRAIN_ATOL, name, "train")
-
-        # # Test set
-        # pred_test = booster.predict(dtest)
-        # _zero_mean_assert(pred_test, TEST_ATOL, name, "test")
-
-
-#### JULY 1 TEST END ####
+        fig2.update_layout(
+            title=f"{name_1},{name_2}: vary {name_1}  |  {name_2}≈C (ε={epsilon})",
+            xaxis_title=name_1,
+            yaxis_title=f"f_{name_1},{name_2}",
+            template="plotly_white",
+            width=900,
+            height=500,
+        )
+        fig2.update_xaxes(range=[x_min, x_max])
+        fig2.update_yaxes(range=[y_min, y_max])
+        fig2.show()
 
 
 if __name__ == "__main__":
-    # # TEST 1
-    # n = 1 << 16
-    # rho_val = 0  # 0, .5, .9, .999, 1
-    # b1, b2, b3 = 3, 2, 10
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    # yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-    # y_true = yf(X[:, 0], X[:, 1])
+    # TEST 1
+    n = 1 << 16
+    rho_val = 0  # 0, .5, .9, .999, 1
+    b1, b2, b3 = 3, 2, 10
+    cov_mat = np.identity(2)
+    cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+    X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+    y_true = yf(X[:, 0], X[:, 1])
+
     # test_equal_predictions(X, y_true)
-    # test_plot_1(X, y_true)
-    # test_purified_mean(X, y_true)
-    # test_plot_all(X, y_true)
-    # test_purity(X, y_true)
     # test_independence(X, y_true)
+    # test_purified_mean_zero(X, y_true, 0.001, 0) # works for all!
+    # test_purity(X, y_true)
+    # test_plot_1(X, y_true)
+    # test_plot_all(X, y_true, 0.05, 0, -3, 3, -2, 2)
 
     # # TEST 2
-    # Parameters
-    n = 1 << 16
-    rho_val = 0  # Correlation between x1 and x2
+    # # Parameters
+    # n = 1 << 16
+    # rho_val = 0  # Correlation between x1 and x2
 
-    # Covariance matrix for bivariate normal
+    # # Covariance matrix for bivariate normal
+    # cov_mat = np.identity(2)
+    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+
+    # # Generate standard bivariate normal data
+    # X_raw = np.random.multivariate_normal(mean=np.zeros(2), cov=cov_mat, size=n)
+
+    # # Shift both x1 and x2 to ensure x1 * x2 > 0
+    # shift = 5.0  # Empirically safe for most values to ensure product > 0
+    # X = X_raw + shift
+
+    # # Calculate target: y = 2 + log(x1 * x2)
+    # product = X[:, 0] * X[:, 1]
+    # assert np.all(product > 0), "Some x1 * x2 values are not positive!"
+
+    # y_true = 2 + np.log(product)
+
+    # test_equal_predictions(X, y_true)
+    # test_independence(X, y_true)
+    # test_purified_mean_zero(X, y_true, 0.0001, 0)
+    # test_purity(X, y_true)
+    # test_plot_1(X, y_true)
+    # test_plot_all(X, y_true, 0.5, 5)
+
+    # TEST 3
+    n = 1 << 18  # number of data points
+    rho_val = 0  # correlation between x1 and x2 (can try 0, 0.5, 1.0)
+    b1, b2, b3 = 3.0, 2.0, 10.0  # coefficients
+
+    # Covariance matrix
     cov_mat = np.identity(2)
     cov_mat[0, 1] = cov_mat[1, 0] = rho_val
 
-    # Generate standard bivariate normal data
-    X_raw = np.random.multivariate_normal(mean=np.zeros(2), cov=cov_mat, size=n)
+    # Sample from multivariate normal
+    X = np.random.multivariate_normal(np.zeros(2), cov_mat, size=n)
+    x1, x2 = X[:, 0], X[:, 1]
 
-    # Shift both x1 and x2 to ensure x1 * x2 > 0
-    shift = 5.0  # Empirically safe for most values to ensure product > 0
-    X = X_raw + shift
-
-    # Calculate target: y = 2 + log(x1 * x2)
-    product = X[:, 0] * X[:, 1]
-    assert np.all(product > 0), "Some x1 * x2 values are not positive!"
-
-    y_true = 2 + np.log(product)
+    # Define target
+    y_true = b1 * x1 + b2 * x2 + b3 * x1 * x2 + 2
 
     # test_equal_predictions(X, y_true)
-    test_plot_1(X, y_true)
-    # test_purified_mean(X, y_true)
-    test_plot_all(X, y_true)
-    # test_purity(X, y_true)
     # test_independence(X, y_true)
-
-    # # TEST 3
-    # n = 1 << 16  # number of data points
-    # rho_val = 0.0  # correlation between x1 and x2 (can try 0, 0.5, 1.0)
-    # b1, b2, b3 = 3.0, 2.0, 10.0  # coefficients
-
-    # # Covariance matrix
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-
-    # # Sample from multivariate normal
-    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, size=n)
-    # x1, x2 = X[:, 0], X[:, 1]
-
-    # # Define target
-    # y_true = b1 * x1 + b2 * x2 + b3 * x1 * x2 + 2
+    # test_purified_mean_zero(X, y_true, 0.001, 0)
+    # test_purity(X, y_true)
+    # test_plot_1(X, y_true)
+    test_plot_all(X, y_true, 0.05, 0, -2, 2, -2, 2)
