@@ -347,6 +347,7 @@ def test_purity(X, y):
 def test_plot_1(X, y):
     """
     Plot uniform distrubition on 1 factor (main effects vs. grid)
+    This should just plot
     """
     ##### SETUP #####
     model, dtrain, dtest = setup_model(X, y)
@@ -494,7 +495,7 @@ def test_plot_all(
             y_sorted = y_pred[sorted_index]
 
             fig1.add_trace(
-                go.Scatter(x=x_sorted, y=y_sorted, mode="lines", name=f"{name_1}≈{C}")
+                go.Scatter(x=x_sorted, y=y_sorted, mode="markers", name=f"{name_1}≈{C}")
             )
 
         fig1.update_layout(
@@ -525,7 +526,7 @@ def test_plot_all(
             y_sorted = y_pred[sorted_index]
 
             fig2.add_trace(
-                go.Scatter(x=x_sorted, y=y_sorted, mode="lines", name=f"{name_2}≈{C}")
+                go.Scatter(x=x_sorted, y=y_sorted, mode="markers", name=f"{name_2}≈{C}")
             )
         fig2.update_layout(
             title=f"{name_1},{name_2}: vary {name_1}  |  {name_2}≈C (ε={epsilon})",

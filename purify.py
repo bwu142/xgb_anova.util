@@ -2,22 +2,39 @@
 # Distributed under the BSD 3-Clause License
 
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 import json
-import plotly.express as px
 import os
-import plotly.graph_objects as go
+import io
+
+np.set_printoptions(precision=16, suppress=True)
 
 
 ##### TREE HELPER FUNCTIONS #####
+def load_model_from_memory(file_path):
+    """
+    Args:
+        file_path (str): Path to the .json file representing a saved XGBoost model.
+            e.g. "loaded_models/new_model.json"
+    Returns:
+        xgb.Booster: Loaded Booster object.
+    """
+    booster = xgb.Booster()
+    booster.load_model(file_path)
+    return booster
+
+
 def get_model_file(
-    model, input_file_name="original_model.json", folder="loaded_models"
+    model,
+    save_to_disk=False,
+    input_file_name="original_model.json",
+    folder="loaded_models",
 ):
     """
     Args:
         model (Booster): trained model
+        save_to_disk (bool): True --> saves model to disk. False --> uses in-memory stream
         input_file_name (string):
         folder (string):
 
@@ -25,24 +42,36 @@ def get_model_file(
         dictionary: file version of model that can be edited
     Saves: json file as "input_file_name" in "folder"
     """
-    # Sanity check
-    if not input_file_name.endswith(".json"):
-        input_file_name += ".json"
-    # Ensure the folder exists
-    os.makedirs(folder, exist_ok=True)
-    # Save Model
-    file_path = os.path.join(folder, input_file_name)
-    model.save_model(file_path)
-    # Open model file (dictionary version) for editing
-    with open(file_path, "r") as f:
-        model_file = json.load(f)
+    if save_to_disk:
+        # Ensure file ends with .json
+        if not input_file_name.endswith(".json"):
+            input_file_name += ".json"
+        # Create folder if needed
+        os.makedirs(folder, exist_ok=True)
+        # Save model to file
+        file_path = os.path.join(folder, input_file_name)
+        model.save_model(file_path)
+        # Load model json
+        with open(file_path, "r") as f:
+            model_file = json.load(f)
+    else:
+        # Save model to in-memory buffer as JSON
+        raw = model.save_raw(raw_format="json")  # -> bytes
+        model_json_str = raw.decode("utf-8")  # -> str
+        model_file = json.loads(model_json_str)  # -> dict
     return model_file
 
 
-def get_model(model_file, output_file_name="new_model.json", folder="loaded_models"):
+def get_model(
+    model_file,
+    save_to_disk=False,
+    output_file_name="new_model.json",
+    folder="loaded_models",
+):
     """
     Args:
         model_file (dictionary): file version of model that can be edited
+        save_to_disk: True --> saves model to disk. False --> uses in-memory stream
         input_file_name (string):
         folder (string):
 
@@ -50,18 +79,30 @@ def get_model(model_file, output_file_name="new_model.json", folder="loaded_mode
         Booster: model used for predictions
     Saves model_file as "output_file_name" in "folder"
     """
-    # Sanity check
-    if not output_file_name.endswith(".json"):
-        output_file_name += ".json"
-    # Ensure the folder exists
-    os.makedirs(folder, exist_ok=True)
-    # Save file as json file
-    output_path = os.path.join(folder, output_file_name)
-    with open(output_path, "w") as file:
-        json.dump(model_file, file)
-    # Load model
-    new_model = xgb.Booster()
-    new_model.load_model(output_path)
+    if save_to_disk:
+        # Ensure file ends with .json
+        if not output_file_name.endswith(".json"):
+            output_file_name += ".json"
+        # Create folder if needed
+        os.makedirs(folder, exist_ok=True)
+        # Save file as json file
+        output_path = os.path.join(folder, output_file_name)
+        with open(output_path, "w") as file:
+            json.dump(model_file, file)
+        # Load model
+        new_model = xgb.Booster()
+        new_model.load_model(output_path)
+
+    else:
+        # Serialize the model dict to JSON bytes (must exactly match XGBoost format)
+        json_str = json.dumps(model_file)
+        buffer = io.BytesIO(json_str.encode("utf-8"))
+        buffer.seek(0)
+
+        booster = xgb.Booster()
+        booster.load_model(buffer)
+        return booster
+
     return new_model
 
 
@@ -119,6 +160,25 @@ def traverse_tree(tree, sample):
             node_index = r
 
 
+def all_combinations(indices_list):
+    """
+    Recursively generate all non-empty subsets of a list of indices.
+    Args:
+        indices_list (list): list of ints representing indices (0-indexing) of features in dataset
+    Returns:
+        list: list of feature_tuples
+
+    """
+    if not indices_list:
+        return []
+    first, rest = indices_list[0], indices_list[1:]
+    subsets_without_first = all_combinations(rest)
+    subsets_with_first = [[first] + list(subset) for subset in subsets_without_first]
+    # Add the singleton [first]
+    result = [[first]] + subsets_with_first + subsets_without_first
+    return [tuple(sub) for sub in result]
+
+
 ##### TREE FILTERING #####
 def get_filtered_tree_indices(model, feature_tuple=None):
     """
@@ -143,6 +203,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
         """
         if features is None:
             features = set()
+        # Leaves don't have 'split' key
         if "split" in node:
             split_str = node["split"]
             # Add valid splits
@@ -159,6 +220,7 @@ def get_filtered_tree_indices(model, feature_tuple=None):
 
     # tree_dump returns trees as JSON strings ['{'node_id': 0, 'depth' = 1, etc.}', '{}', etc.]
     tree_dump = model.get_dump(dump_format="json")
+    # print(tree_dump) --> 0 indexing (split: f0)
     filtered_tree_indices = set()
 
     # For each tree, check for set equality (features_used vs. feature_tuple)
@@ -176,7 +238,11 @@ def get_filtered_tree_indices(model, feature_tuple=None):
 
 
 def get_filtered_model(
-    model, feature_tuple=None, output_file_name="new_model.json", folder="loaded_models"
+    model,
+    feature_tuple=None,
+    save_to_disk=False,
+    output_file_name="new_model.json",
+    folder="loaded_models",
 ):
     """
     Args:
@@ -187,7 +253,7 @@ def get_filtered_model(
     Saves new model as "output_file_name" in "folder"
     """
     ##### LOAD #####
-    original_model_file = get_model_file(model, "original_model.json")
+    original_model_file = get_model_file(model, save_to_disk)
     tree_indices = get_filtered_tree_indices(model, feature_tuple)
 
     ##### FILTER TREES #####
@@ -214,13 +280,14 @@ def get_filtered_model(
     original_model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [
         0 for _ in range(len(tree_indices))
     ]
-
     ##### SAVE #####
-    new_model = get_model(original_model_file, output_file_name, folder)
+    new_model = get_model(original_model_file, save_to_disk, output_file_name, folder)
     return new_model
 
 
-def get_filtered_model_list(model, feature_tuple_list=None, output_file_name_list=None):
+def get_filtered_model_list(
+    model, feature_tuple_list=None, save_to_disk=False, output_file_name_list=None
+):
     """
     Args:
         model (Booster): trained model
@@ -243,7 +310,7 @@ def get_filtered_model_list(model, feature_tuple_list=None, output_file_name_lis
         features_tuple = feature_tuple_list[i]
 
         output_models.append(
-            get_filtered_model(model, features_tuple, output_file_name)
+            get_filtered_model(model, features_tuple, save_to_disk, output_file_name)
         )
 
     return output_models
@@ -433,7 +500,7 @@ def new_five_node_tree_right(
 def split_tree(tree):
     """
     Args:
-        tree (dictinoary): tree in model_file
+        tree (dictionary): 7-node, depth-2 tree in model_file
 
     Returns:
         list of dictionaries: list of two new 5-node trees that sum to "tree"
@@ -452,6 +519,13 @@ def split_tree(tree):
     root_left_split_condition = tree["split_conditions"][root_left_index]
     root_right_split_index = tree["split_indices"][root_right_index]
     root_right_split_condition = tree["split_conditions"][root_right_index]
+
+    # Check for case where splitting (x_i has children x_i and x_j)
+    left_tree_one_feature, right_tree_one_feature = False, False
+    if root_split_index == root_left_split_index:
+        left_tree_one_feature = True
+    elif root_split_index == root_right_split_index:
+        right_tree_one_feature = True
 
     # Depth 2
     A_index, B_index, C_index, D_index = get_ordered_leaves(tree, 0)[0]
@@ -482,13 +556,13 @@ def split_tree(tree):
         D_val,
         -1,
     )
-    return [tree_left, tree_right]
+    return [(tree_left, left_tree_one_feature), (tree_right, right_tree_one_feature)]
 
 
 def split_node(tree, leaf_index, node_index):
     """
     Args:
-        tree (dictionary): tree from model_file
+        tree (dictionary): 5-node depth-2 tree from model_file
         leaf_index (int): index of leaf that will be replaced with a split node
         node_index (int): index of node that our added split will replicate
 
@@ -710,7 +784,7 @@ def purify_five_nodes_two_features(tree, dataset, epsilon=1e-1, max_iter=10):
 def purify_one_feature(tree, dataset):
     """
     Args:
-        tree (dictionary): tree (max_depth of 2) from model_file
+        tree (dictionary): tree (max_depth of 2) from model_file with splits on one feature only
         dataset (DMatrix):
     Returns:
         float: correction mean prediction float to add to base_score
@@ -752,12 +826,17 @@ def purify_one_feature(tree, dataset):
 
 
 def purify_2D(
-    model, dataset, output_file_name="new_model.json", output_folder="loaded_models"
+    model,
+    dataset,
+    save_to_disk=True,
+    output_file_name="new_model.json",
+    output_folder="loaded_models",
 ):
     """
     Args:
         model (Booster): max_depth = 2
         dataset (DMatrix): set of points (x-vals)
+        save_to_disk (bool): True --> saves model to disk. False --> uses in-memory stream
         output_file_name (string):
         output_folder (string):
 
@@ -766,33 +845,48 @@ def purify_2D(
             Same predictions as model
             Mean along each axis is 0
     """
-    ##### SPLIT UP 7-NODE f(x1, x2) TREES INTO TWO, 5-NODE f(x1, x2) TREES#####
-    tree_indices_x1x2x3 = (
-        get_filtered_tree_indices(model, (0, 1))
-        | get_filtered_tree_indices(model, (1, 2))
-        | get_filtered_tree_indices(model, (0, 2))
-        | get_filtered_tree_indices(model, (0, 1, 2))
-    )
-    model_file = get_model_file(model)
+    # Get all trees that aren't main effects (interaction trees)
+    all_feature_combinations = all_combinations(list(range(dataset.num_col())))
+    feature_tuples_with_interaction = [
+        feature_tuple
+        for feature_tuple in all_feature_combinations
+        if len(feature_tuple) != 1
+    ]
+    tree_indices_with_interaction = set()
+    for feature_tuple in feature_tuples_with_interaction:
+        tree_indices_with_interaction |= get_filtered_tree_indices(model, feature_tuple)
 
+    ##### SEPARATE TREES INTO BIAS, MAIN EFFECT, 2-FEATURE INTERACTION #####
+    model_file = get_model_file(model, save_to_disk)
     tree_list_all = model_file["learner"]["gradient_booster"]["model"]["trees"]
     bias_tree_vals = []
     tree_list_one_feature = []
     tree_list_two_features = []
 
-    # Append equivalent 5-node trees
+    # Loop through all trees
     for i, tree in enumerate(tree_list_all):
         # 0-feature tree
         if len(tree["base_weights"]) == 1:
             bias_tree_vals.append(tree["base_weights"][0])
-        # two-feature tree
-        elif i in tree_indices_x1x2x3:
+        # interaction tree (2-3 features)
+        elif i in tree_indices_with_interaction:
+            # Split up 7-node f(x_i, x_j, x_k) trees into two, 5-node f(x_i, x_j) trees
             if int(tree["tree_param"]["num_nodes"]) == 7:
-                new_trees = split_tree(tree)
-                tree_list_two_features.extend(new_trees)
+
+                left_tree_info, right_tree_info = split_tree(tree)
+                if left_tree_info[1] is True:
+                    tree_list_one_feature.append(left_tree_info[0])
+                    tree_list_two_features.append(right_tree_info[0])
+                elif right_tree_info[1] is True:
+                    tree_list_two_features.append(left_tree_info[0])
+                    tree_list_one_feature.append(right_tree_info[0])
+                else:
+                    tree_list_two_features.append(left_tree_info[0])
+                    tree_list_two_features.append(right_tree_info[0])
+            # 5-node two features
             else:
                 tree_list_two_features.append(tree)
-        # one-feature tree
+        # main effect tree (1 feature)
         else:
             tree_list_one_feature.append(tree)
 
@@ -839,12 +933,18 @@ def purify_2D(
         tree["id"] = i
 
     ##### SAVE AND RETURN #####
-    new_model = get_model(model_file, output_file_name, output_folder)
+    new_model = get_model(model_file, save_to_disk, output_file_name, output_folder)
     new_model.set_param({"base_score": new_base_score})
     return new_model
 
 
-def fANOVA_2D(model, dataset):
+def fANOVA_2D(
+    model,
+    dataset,
+    save_to_disk=True,
+    output_file_name="new_model.json",
+    output_folder="loaded_models",
+):
     """
     Args:
         model (Booster): model from model_file (max_depth = 2)
@@ -856,41 +956,24 @@ def fANOVA_2D(model, dataset):
             value (Booster): model
         bias (float)
     """
-    model_file = get_model_file(model, "THEOG.json")
     # Get all features
     num_features = dataset.num_col()
     feature_indices = list(range(num_features))
 
-    # Get all subsets
-    def all_combinations(indices_list):
-        """
-        Recursively generate all non-empty subsets of a list of indices.
-        Args:
-            indices_list (list): list of ints representing indices (0-indexing) of features in dataset
-        Returns:
-            list: list of feature_tuples
-
-        """
-        if not indices_list:
-            return []
-        first, rest = indices_list[0], indices_list[1:]
-        subsets_without_first = all_combinations(rest)
-        subsets_with_first = [
-            [first] + list(subset) for subset in subsets_without_first
-        ]
-        # Add the singleton [first]
-        result = [[first]] + subsets_with_first + subsets_without_first
-        return [tuple(sub) for sub in result]
-
     # Purify Model
-    purified_model = purify_2D(model, dataset)
-    purified_model_file = get_model_file(model)
+    purified_model = purify_2D(
+        model, dataset, save_to_disk, output_file_name, output_folder
+    )
+    purified_model_file = get_model_file(model, save_to_disk)
     bias = float(purified_model_file["learner"]["learner_model_param"]["base_score"])
 
     # Filter Model
     all_nonempty_subsets = all_combinations(feature_indices)
     filtered_model_list = get_filtered_model_list(
-        purified_model, all_nonempty_subsets, [str(tup) for tup in all_nonempty_subsets]
+        purified_model,
+        all_nonempty_subsets,
+        save_to_disk,
+        [str(tup) for tup in all_nonempty_subsets],
     )
 
     model_dict = {}
@@ -905,48 +988,132 @@ def fANOVA_2D(model, dataset):
     return purified_model, model_dict, bias
 
 
-if __name__ == "__main__":
-    np.random.seed(42)
-    x1 = np.random.uniform(0, 100, 10)
-    x2 = np.random.uniform(0, 100, 10)
-    x3 = np.random.uniform(0, 100, 10)
-    y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
+####### NEW STUFF #######
 
-    X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
+
+if __name__ == "__main__":
+    ##### GENERATE TEST DATA #####
+    n = 1 << 16
+    rho_val = 0  # 0, .5, .9, .999, 1
+    b1, b2, b3 = 3, 2, 10
+    cov_mat = np.identity(2)
+    cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+    X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+    y_true = yf(X[:, 0], X[:, 1])
+
+    np.random.seed(42)
+
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42
+        X, y_true, test_size=0.3, random_state=42
     )
 
-    # Convert to DMatrix format required by xgb.train
     dtrain = xgb.DMatrix(X_train, label=y_train)
     dtest = xgb.DMatrix(X_test, label=y_test)
 
-    # Parameters (note different parameter names)
     params = {
         "max_depth": 2,
         "learning_rate": 1.0,
         "objective": "reg:squarederror",
         "random_state": 42,
     }
-
-    # Training with monitoring
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=1000,  # Equivalent to n_estimators
+        num_boost_round=100,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
 
-    filtered_model = get_filtered_model(model, (0, 1), "filtered_model.json")
-    print(f"original_prediction (0, 1): {filtered_model.predict(dtest)}")
-    purified_new_model = purify_2D(filtered_model, dtrain)
-    print(f"purified_prediction: {purified_new_model.predict(dtest)}")
+    original_model_prediction = model.predict(dtrain)
+    print(f"original model prediction: {original_model_prediction[:5]}")
+    # print(type(original_model_prediction))
 
-    model_file = get_model_file(model, "original_model.json")
-    print(f"original_prediction: {model.predict(dtest)}")
-    purified_model = purify_2D(model, dtrain)
-    print(f"purified_prediction: {purified_model.predict(dtest)}")
+    model_file = get_model_file(model)
+    model_loaded = get_model(model_file)
+    model_loaded_prediction = model_loaded.predict(dtrain)
+    print(f"loaded model prediction: {model_loaded_prediction[:5]}")
 
-    _, model_dict, bias = fANOVA_2D(model, dtrain)
-    model_x1 = model_dict[(0, 1)]
+    # model_file = get_model_file(model, True)
+    # num_samples, num_features = dtrain.num_row(), dtrain.num_col()
+
+    # # Original Model Prediction
+    # original_model_prediction = np.zeros(num_samples)
+    # original_model_prediction += model.predict(dtrain)
+    # print(f"original model prediction: {original_model_prediction[:5]}")
+
+    # dtrain = xgb.DMatrix("loaded_models/dtrain.buffer")
+    # # cached_model = load_model_from_memory("loaded_models/original_model.json")
+    # # print(f"cached_model_prediction:{cached_model.predict(dtrain)[:5]}")
+
+    # # Purified Model Prediction
+    # purified_model, purified_model_dict, bias = fANOVA_2D(model, dtrain)
+    # purified_model_prediction = np.zeros(num_samples)
+    # purified_model_prediction += purified_model.predict(dtrain)
+    # print(f"purified model prediction: {purified_model_prediction[:5]}")
+    # # Prediction from summing submodels
+    # submodel_sum_prediction = np.zeros(num_samples)
+    # for submodel in purified_model_dict.values():
+    #     submodel_sum_prediction += submodel.predict(dtrain)
+    # submodel_sum_prediction += bias
+    # print(f"submodel sum prediction: {submodel_sum_prediction[:10]}")
+
+    # print(
+    #     f"original, purified diff = {original_model_prediction[:10] - purified_model_prediction[:10]}"
+    # )
+    # print(
+    #     f"purified, submodel sum diff = {purified_model_prediction[:10] - submodel_sum_prediction[:10]}"
+    # )
+
+    # print(
+    #     f"submodel sum, original diff = {submodel_sum_prediction[:10] - original_model_prediction[:10]}"
+    # )
+
+    ###############
+    ##### END #####
+    ###############
+
+    # np.random.seed(42)
+    # x1 = np.random.uniform(0, 100, 10)
+    # x2 = np.random.uniform(0, 100, 10)
+    # x3 = np.random.uniform(0, 100, 10)
+    # y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
+
+    # X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
+    # X_train, X_test, y_train, y_test = train_test_split(
+    #     X, y, test_size=0.3, random_state=42
+    # )
+
+    # # Convert to DMatrix format required by xgb.train
+    # dtrain = xgb.DMatrix(X_train, label=y_train)
+    # dtest = xgb.DMatrix(X_test, label=y_test)
+
+    # # Parameters (note different parameter names)
+    # params = {
+    #     "max_depth": 2,
+    #     "learning_rate": 1.0,
+    #     "objective": "reg:squarederror",
+    #     "random_state": 42,
+    # }
+
+    # # Training with monitoring
+    # model = xgb.train(
+    #     params=params,
+    #     dtrain=dtrain,
+    #     num_boost_round=1000,  # Equivalent to n_estimators
+    #     evals=[(dtrain, "train"), (dtest, "test")],
+    #     verbose_eval=True,
+    # )
+
+    # filtered_model = get_filtered_model(model, (0, 1), "filtered_model.json")
+    # print(f"original_prediction (0, 1): {filtered_model.predict(dtest)}")
+    # purified_new_model = purify_2D(filtered_model, dtrain)
+    # print(f"purified_prediction: {purified_new_model.predict(dtest)}")
+
+    # model_file = get_model_file(model, "original_model.json")
+    # print(f"original_prediction: {model.predict(dtest)}")
+    # purified_model = purify_2D(model, dtrain)
+    # print(f"purified_prediction: {purified_model.predict(dtest)}")
+
+    # _, model_dict, bias = fANOVA_2D(model, dtrain)
+    # model_x1 = model_dict[(0, 1)]
