@@ -8,6 +8,9 @@ import json
 import os
 import io
 
+# SET PARAM BASE IS AN INPUT
+# LOAD THROUGH JSON AND ACTUALLY CHANGE BASE_SCORE KEY
+
 np.set_printoptions(precision=16, suppress=True)
 
 
@@ -20,9 +23,24 @@ def load_model_from_memory(file_path):
     Returns:
         xgb.Booster: Loaded Booster object.
     """
-    booster = xgb.Booster()
-    booster.load_model(file_path)
-    return booster
+    # with open(file_path, "r") as f:
+    #     model_dict = json.load(f)
+
+    # json_str = json.dumps(model_dict)
+    # model_bytes = json_str.encode("utf-8")
+
+    # booster = xgb.Booster()
+    # booster.load_model(model_bytes)
+    # return booster
+
+    # model_dict = json.loads(open(file_path).read())
+
+    # with open(file_path, "w") as file:
+    #     json.dump(model_dict, file)
+
+    new_model = xgb.Booster()
+    new_model.load_model(file_path)
+    return new_model
 
 
 def get_model_file(
@@ -42,24 +60,21 @@ def get_model_file(
         dictionary: file version of model that can be edited
     Saves: json file as "input_file_name" in "folder"
     """
-    if save_to_disk:
-        # Ensure file ends with .json
+    if save_to_disk:  # --- disk path ---
         if not input_file_name.endswith(".json"):
             input_file_name += ".json"
-        # Create folder if needed
+        # Ensure the folder exists
         os.makedirs(folder, exist_ok=True)
-        # Save model to file
+        # Save Model
         file_path = os.path.join(folder, input_file_name)
         model.save_model(file_path)
-        # Load model json
+        # Open model file (dictionary version) for editing
         with open(file_path, "r") as f:
             model_file = json.load(f)
-    else:
-        # Save model to in-memory buffer as JSON
-        raw = model.save_raw(raw_format="json")  # -> bytes
-        model_json_str = raw.decode("utf-8")  # -> str
-        model_file = json.loads(model_json_str)  # -> dict
-    return model_file
+        return model_file
+    else:  # --- in-memory ---
+        raw = model.save_raw(raw_format="json")  # bytes
+        return json.loads(raw.decode("utf-8"))  # dict
 
 
 def get_model(
@@ -83,7 +98,7 @@ def get_model(
         # Ensure file ends with .json
         if not output_file_name.endswith(".json"):
             output_file_name += ".json"
-        # Create folder if needed
+        # Ensure the folder exists
         os.makedirs(folder, exist_ok=True)
         # Save file as json file
         output_path = os.path.join(folder, output_file_name)
@@ -92,18 +107,13 @@ def get_model(
         # Load model
         new_model = xgb.Booster()
         new_model.load_model(output_path)
+        return new_model
 
     else:
-        # Serialize the model dict to JSON bytes (must exactly match XGBoost format)
-        json_str = json.dumps(model_file)
-        buffer = io.BytesIO(json_str.encode("utf-8"))
-        buffer.seek(0)
-
+        json_bytes = json.dumps(model_file).encode("utf-8")  # <-- RAW BYTES
         booster = xgb.Booster()
-        booster.load_model(buffer)
+        booster.load_model(bytearray(json_bytes))  # bytearray / bytes OK
         return booster
-
-    return new_model
 
 
 def get_ordered_leaves(tree, node_index, leaf_indices=None, leaf_vals=None):
@@ -938,6 +948,7 @@ def purify_2D(
     return new_model
 
 
+# make output into class + add optional load from memory option
 def fANOVA_2D(
     model,
     dataset,
@@ -981,6 +992,12 @@ def fANOVA_2D(
     for subset, model in zip(all_nonempty_subsets, filtered_model_list):
         # Reset bias to 0 (don't want to overcount)
         model.set_param({"base_score": 0.0})
+
+        # new stuff
+        model_file = get_model_file(model)
+        model = get_model(model_file)
+        # end new stuff
+
         model_dict[subset] = model
 
     # print(model_dict)
@@ -1009,33 +1026,185 @@ if __name__ == "__main__":
     )
 
     dtrain = xgb.DMatrix(X_train, label=y_train)
+    # dtrain.save_binary("dtrain.buffer")
+    # dtrain = xgb.DMatrix("dtrain.buffer")
     dtest = xgb.DMatrix(X_test, label=y_test)
 
-    params = {
-        "max_depth": 2,
-        "learning_rate": 1.0,
-        "objective": "reg:squarederror",
-        "random_state": 42,
-    }
-    model = xgb.train(
-        params=params,
-        dtrain=dtrain,
-        num_boost_round=100,  # Equivalent to n_estimators
-        evals=[(dtrain, "train"), (dtest, "test")],
-        verbose_eval=True,
-    )
+    if True:
+        params = {
+            "max_depth": 2,
+            "learning_rate": 1.0,
+            "objective": "reg:squarederror",
+            "random_state": 42,
+        }
 
-    original_model_prediction = model.predict(dtrain)
-    print(f"original model prediction: {original_model_prediction[:5]}")
-    # print(type(original_model_prediction))
+        model = xgb.train(
+            params=params,
+            dtrain=dtrain,
+            num_boost_round=5,  # Equivalent to n_estimators
+            evals=[(dtrain, "train"), (dtest, "test")],
+            verbose_eval=True,
+        )
 
-    model_file = get_model_file(model)
-    model_loaded = get_model(model_file)
-    model_loaded_prediction = model_loaded.predict(dtrain)
-    print(f"loaded model prediction: {model_loaded_prediction[:5]}")
+        config = json.loads(model.save_config())
+        # Add your constant to the base_score
+        config["learner"]["learner_model_param"]["base_score"] = str(
+            float(config["learner"]["learner_model_param"]["base_score"]) + 10
+        )
+        # Save modified config back
+        model.load_config(json.dumps(config))
 
-    # model_file = get_model_file(model, True)
+        original_model_file = get_model_file(model, True, "original_model.json")
+        # model_2 = get_model(original_model_file)
+
+        # print(f"original model prediction: {model.predict(dtrain)[:5]}")
+
+        # model_copy_file = get_model_file(model, True, "copy.json")
+        # model_copy_file["learner"]["learner_model_param"]["base_score"] = "999.0"
+        # # model.set_param({"base_score": "9999"})
+        # model_copy = get_model(model_copy_file, True, "copy.json")
+        # print(f"new prediction: {model_copy.predict(dtrain)[:5]}")
+
+        # original_bias = original_model_file["learner"]["learner_model_param"][
+        #     "base_score"
+        # ]
+
+        # model.save_model("loaded_models/original_model.json")
+
+    # print(model.predict(dtrain)[:5])
+    # model.save_model("loaded_models/test_one.json")
+    # # model_file = get_model_file(model, True)
+    # OG_MODEL = load_model_from_memory("loaded_models/original_model.json")
+    # test_model = load_model_from_memory("loaded_models/test_one.json")
+    # print(OG_MODEL.predict(dtrain)[:5])
+
+    #### START
+    # original_model = xgb.Booster()
+    # original_model.load_model("loaded_models/original_model.json")
+    original_model = load_model_from_memory("loaded_models/original_model.json")
+    model_copy = load_model_from_memory("loaded_models/original_model_copy.json")
+    model_10 = load_model_from_memory("loaded_models/original_model_copy10.json")
+
+    def compare_two_models(model_1, model_2, dtrain, shift=0.0):
+        predict_1 = model_1.predict(dtrain)
+        predict_2 = model_2.predict(dtrain) + shift
+        print(f"predict_1: {predict_1}")
+        print(f"predict_2: {predict_2}")
+        print(f"diff: {predict_1[:5] - predict_2[:5]}")
+        print(np.allclose(predict_1, predict_2, atol=1e-9, rtol=0.0))
+
+    compare_two_models(model, original_model, dtrain)
+    compare_two_models(model, model_10, dtrain, -10)
+
+    # load_model_from_memory("loaded_models/original_model.json")
+    # print(original_model.predict(dtrain)[:5])
+    # copy = load_model_from_memory("loaded_models/original_model_copy.json")
+
+    # bias = float("1.0010112E1")
+    # model_copy.set_param({"base_score": 0.0})
+
+    # model_copy_file = get_model_file(model_copy, True, "copy.json")
+    # model_copy = get_model(model_copy_file, True, "copy.json")
+    # bias = float("9.990817E0")
+    # original_prediction = original_model.predict(dtrain)
+    # copy_prediction = model_copy.predict(dtrain)
+    # bias = original_prediction[0] - copy_prediction[0]
+
+    # # bias = float(original_model.attr("base_score"))
+    # print(
+    #     (original_model.predict(dtrain)[:10] - bias) - model_copy.predict(dtrain)[:10]
+    # )
+    # # print(float("1.0007808E1"))
+
+    # assert np.allclose(
+    #     (original_model.predict(dtrain) - bias),
+    #     model_copy.predict(dtrain),
+    #     atol=1e-9,
+    #     rtol=0.0,
+    # )
+
+    # diff = original_model.predict(dtrain) - model.copy
+
+    ##### END #####
+
+    # original_model_file["learner"]["learner_model_param"]["base_score"] = "0.0"
+    # model.set_param({"base_score": 0.0})
+
+    # # BASE SCORE TEST
+    # model_file = get_model_file(model, True, "original_model.json")
+    # model = get_model(model_file, True, "original_model.json")
+    # print(f"original_model_prediction: {model.predict(dtrain)[:5]}")
+
+    # model.set_param({"base_score": 0.0})
+    # model_file_weird = get_model_file(model, True, "model_base_score_zero.json")
+    # model_diff_base_score = get_model(model_file_weird)
+    # print(
+    #     f"model base score zero prediction: {model_diff_base_score.predict(dtrain)[:5]}"
+    # )
+
+    # model.set_param({"base_score": 0.0})
+
+    # # Original Prediction
+    # original_model_prediction = np.zeros(dtrain.num_row())
+    # original_model_prediction += model.predict(dtrain)
+    # print(f"original model prediction: {original_model_prediction[:5]}")
+    # # print(type(original_model_prediction))
+
+    # # Prediction after save and load
+    # model_file = get_model_file(model)
+    # model_loaded = get_model(model_file)
+    # model_loaded_prediction = np.zeros(dtrain.num_row())
+    # model_loaded_prediction += model_loaded.predict(dtrain)
+    # print(f"loaded model prediction: {model_loaded_prediction[:5]}")
+
+    # # Prediction after filtering
     # num_samples, num_features = dtrain.num_row(), dtrain.num_col()
+    # feature_indices = list(range(num_features))
+    # all_nonempty_subsets = all_combinations(feature_indices) + [()]
+    # filtered_model_list = get_filtered_model_list(
+    #     model,
+    #     all_nonempty_subsets,
+    #     True,
+    #     [str(tup) for tup in all_nonempty_subsets],
+    # )
+    # model_dict = {}
+    # bias = float(model_file["learner"]["learner_model_param"]["base_score"])
+
+    # for subset, submodel in zip(all_nonempty_subsets, filtered_model_list):
+    #     # Reset bias to 0 (don't want to overcount)
+    #     submodel.set_param({"base_score": 0.0})
+    #     submodel_dict = get_model_file(submodel)
+    #     submodel = get_model(submodel_dict)
+    #     # submodel_dict["learner"]["learner_model_param"]["base_score"] = "0.0"
+    #     model_dict[subset] = submodel
+
+    # model_subsets_prediction = np.zeros(num_samples)
+    # for name, submodel in model_dict.items():
+    #     # print(f"{name}: {submodel.predict(dtrain)[:5]}")
+    #     model_subsets_prediction += submodel.predict(dtrain)
+    # model_subsets_prediction += bias
+    # print(f"summed submodels prediction: {model_subsets_prediction[:5]}")
+    # print(f"SUMMED DIFF: {model_loaded_prediction[:5] - model_subsets_prediction[:5]}")
+
+    # # Iteration Range Prediction
+    # summed_iteration_prediction = np.zeros(num_samples)
+    # for i in range(5):
+    #     summed_iteration_prediction += model.predict(dtrain, iteration_range=(i, i + 1))
+    #     summed_iteration_prediction -= bias
+    # summed_iteration_prediction += bias
+    # print(f"summed_iteration_prediction: {summed_iteration_prediction[:5]}")
+    # print(
+    #     f"ITERATION DIFF: {model_loaded_prediction[:5] - summed_iteration_prediction[:5]}"
+    # )
+
+    # # Single Test Point Traversal Inspection
+    # dtrain = dtrain.get_data()
+    # if hasattr(dtrain, "toarray"):
+    #     X_train = dtrain.toarray()
+    # print(X_train[0, :])
+    # print(dtrain[0, :])
+
+    ###### END ######
 
     # # Original Model Prediction
     # original_model_prediction = np.zeros(num_samples)

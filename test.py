@@ -13,6 +13,7 @@ import json
 import filter
 import purify
 from sklearn.metrics import r2_score
+import pygam
 
 
 ##############################
@@ -203,11 +204,10 @@ def test_independence(X, y):
 ####################
 #### MAIN TESTS ####
 ####################
-def setup_model(X, y):
+def setup_model(X, y, num_trees=100):
     # Setup
     np.random.seed(42)
 
-    # X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42
     )
@@ -224,7 +224,7 @@ def setup_model(X, y):
     model = xgb.train(
         params=params,
         dtrain=dtrain,
-        num_boost_round=100,  # Equivalent to n_estimators
+        num_boost_round=num_trees,  # Equivalent to n_estimators
         evals=[(dtrain, "train"), (dtest, "test")],
         verbose_eval=True,
     )
@@ -254,24 +254,170 @@ def get_random_input_set(dtrain, dtest):
     return xgb.DMatrix(X_sample, feature_names=dtrain.feature_names)
 
 
-def test_equal_predictions(X, y):
+def test_equal_predictions(X, y, num_trees=100):
     """
     check f(X) = g0 + g1(x1) + g2(x2) + g12(x1, x2) + g13(x1, x3) + g23(x2, x3) + g123(x1, x2, x3)
     """
-    model, dtrain, dtest = setup_model(X, y)
-    random_input_set = get_random_input_set(dtrain, dtest)
-    model_prediction = model.predict(random_input_set)
+    model, dtrain, dtest = setup_model(X, y, num_trees)
+    # random_input_set = get_random_input_set(dtrain, dtest)
+    # model_prediction = model.predict(random_input_set)
 
-    _, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
+    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
 
-    num_samples = random_input_set.num_row()
+    # Original Model
+    model_prediction = model.predict(dtrain)
+    # Purified Model
+    purified_model_prediction = purified_model.predict(dtrain)
+    # Purified Prediction Sum
+    num_samples = dtrain.num_row()
     purified_prediction_sum = np.zeros(num_samples)
-
     for purified_model in purified_model_dict.values():
-        purified_prediction_sum += purified_model.predict(random_input_set)
+        purified_prediction_sum += purified_model.predict(dtrain)
     purified_prediction_sum += bias
 
-    assert np.allclose(purified_prediction_sum, model_prediction, atol=0.01)
+    # Comparisons
+    print(f"original_model_prediction: {model_prediction}")
+    print(f"purified_model_prediction: {purified_model_prediction}")
+    print(f"purified_subset_sum_prediction: {purified_prediction_sum}")
+
+    assert np.allclose(
+        model_prediction, purified_model_prediction, atol=1e-5, rtol=0.0
+    ), "model_prediction vs. purified_model_prediction not precise!"
+    assert np.allclose(
+        model_prediction, purified_prediction_sum, atol=1e-5, rtol=0.0
+    ), "model_prediction vs. purified_prediction_sum not precise!"
+    assert np.allclose(
+        purified_model_prediction, purified_prediction_sum, atol=1e-5, rtol=0.0
+    ), "purified_model_prediction vs. purified_prediction_sum not precise!"
+
+
+def plot_against_true(X, y, b1, b2, b3, rho, plot_start=-1.5, plot_end=1.5):
+    # Fit and purify model
+    model, dtrain, dtest = setup_model(X, y)
+    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
+
+    # Generate meshgrid
+    x = np.linspace(plot_start, plot_end, 100)
+    x1, x2 = np.meshgrid(x, x)
+    grid = np.column_stack((x1.ravel(), x2.ravel()))
+
+    # True purified interaction f12
+    term1 = x1 * x2
+    term2 = (rho / (1 + rho**2)) * (x1**2 + x2**2)
+    term3 = rho * (1 - rho**2) / (1 + rho**2)
+    z_true = b3 * (term1 - term2 + term3)
+
+    # Predicted purified interaction f12 from XGBoost model
+    dgrid = xgb.DMatrix(grid)
+    z_pred = purified_model_dict[(0, 1)].predict(dgrid).reshape(x1.shape)
+
+    # Plot both surfaces
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Surface(
+            z=z_true, x=x1, y=x2, colorscale="Viridis", opacity=0.6, name="True f₁₂"
+        )
+    )
+    fig.add_trace(
+        go.Surface(
+            z=z_pred,
+            x=x1,
+            y=x2,
+            colorscale="Cividis",
+            opacity=0.6,
+            name="Purified f₁₂ (XGBoost)",
+        )
+    )
+
+    fig.update_layout(
+        title="True vs XGBoost Purified f₁₂(x₁, x₂)",
+        scene=dict(xaxis_title="x₁", yaxis_title="x₂", zaxis_title="f₁₂"),
+        width=800,
+        height=700,
+    )
+    fig.show()
+
+
+def plot_components(y_pred_func, x_vals, y_ref_func):
+    """
+    y_pred_func: submodel from purified_model_dict
+
+    x_vals:
+    y_ref_func: lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+    """
+    # Construct input data for purified model prediction
+    X1 = np.zeros((len(x_vals), 2))
+    X1[:, 0] = x_vals
+    X2 = np.zeros((len(x_vals), 2))
+    X2[:, 1] = x_vals
+    dX1 = xgb.DMatrix(X1)
+    dX2 = xgb.DMatrix(X2)
+
+    model_pred = y_pred_func.predict(dX1)
+    ref_pred = y_ref_func(x_vals)
+
+    true_f1
+
+    # True component functions (centered)
+    true_f1 = (
+        b1 * x_vals + b3 * rho / (1 + rho**2) * x_vals**2 - b3 * rho / (1 + rho**2)
+    )
+    true_f2 = (
+        b2 * x_vals + b3 * rho / (1 + rho**2) * x_vals**2 - b3 * rho / (1 + rho**2)
+    )
+
+    # Construct input data for purified model prediction
+    X1 = np.zeros((len(x_vals), 2))
+    X1[:, 0] = x_vals
+    X2 = np.zeros((len(x_vals), 2))
+    X2[:, 1] = x_vals
+    dX1 = xgb.DMatrix(X1)
+    dX2 = xgb.DMatrix(X2)
+
+    # Predicted component functions
+    pred_f1 = purified_model_dict[(0,)].predict(dX1)
+    pred_f2 = purified_model_dict[(1,)].predict(dX2)
+
+    # Plot f1
+    fig1 = go.Figure()
+    fig1.add_trace(go.Scatter(x=x_vals, y=true_f1, mode="lines", name="True f1"))
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=pred_f1,
+            mode="lines",
+            name="Purified f1",
+            line=dict(dash="dash"),
+        )
+    )
+    fig1.update_layout(
+        title="True vs Purified f1(x1)", xaxis_title="x1", yaxis_title="f1(x1)"
+    )
+
+    # Plot f2
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=x_vals, y=true_f2, mode="lines", name="True f2"))
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=pred_f2,
+            mode="lines",
+            name="Purified f2",
+            line=dict(dash="dash"),
+        )
+    )
+    fig2.update_layout(
+        title="True vs Purified f2(x2)", xaxis_title="x2", yaxis_title="f2(x2)"
+    )
+
+    fig1.show()
+    fig2.show()
+
+    return fig1, fig2
+
+
+######
 
 
 def test_purified_mean_zero(X, y, epsilon=1, C=0):
@@ -542,15 +688,15 @@ def test_plot_all(
 
 
 if __name__ == "__main__":
-    # TEST 1
-    n = 1 << 16
-    rho_val = 0  # 0, .5, .9, .999, 1
-    b1, b2, b3 = 3, 2, 10
-    cov_mat = np.identity(2)
-    cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-    X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-    y_true = yf(X[:, 0], X[:, 1])
+    # # TEST 1
+    # n = 1 << 16
+    # rho_val = 0  # 0, .5, .9, .999, 1
+    # b1, b2, b3 = 3, 2, 10
+    # cov_mat = np.identity(2)
+    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    # yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+    # y_true = yf(X[:, 0], X[:, 1])
 
     # test_equal_predictions(X, y_true)
     # test_independence(X, y_true)
@@ -588,25 +734,58 @@ if __name__ == "__main__":
     # test_plot_1(X, y_true)
     # test_plot_all(X, y_true, 0.5, 5)
 
-    # TEST 3
-    n = 1 << 18  # number of data points
-    rho_val = 0  # correlation between x1 and x2 (can try 0, 0.5, 1.0)
-    b1, b2, b3 = 3.0, 2.0, 10.0  # coefficients
+    # # TEST 3
+    # n = 1 << 18  # number of data points
+    # rho_val = 0  # correlation between x1 and x2 (can try 0, 0.5, 1.0)
+    # b1, b2, b3 = 3.0, 2.0, 10.0  # coefficients
 
-    # Covariance matrix
-    cov_mat = np.identity(2)
-    cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+    # # Covariance matrix
+    # cov_mat = np.identity(2)
+    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
 
-    # Sample from multivariate normal
-    X = np.random.multivariate_normal(np.zeros(2), cov_mat, size=n)
-    x1, x2 = X[:, 0], X[:, 1]
+    # # Sample from multivariate normal
+    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, size=n)
+    # x1, x2 = X[:, 0], X[:, 1]
 
-    # Define target
-    y_true = b1 * x1 + b2 * x2 + b3 * x1 * x2 + 2
+    # # Define target
+    # y_true = b1 * x1 + b2 * x2 + b3 * x1 * x2 + 2
 
     # test_equal_predictions(X, y_true)
     # test_independence(X, y_true)
     # test_purified_mean_zero(X, y_true, 0.001, 0)
     # test_purity(X, y_true)
     # test_plot_1(X, y_true)
-    test_plot_all(X, y_true, 0.05, 0, -2, 2, -2, 2)
+    # test_plot_all(X, y_true, 0.05, 0, -2, 2, -2, 2)
+
+    ####### TESTS NOW ######
+    seed = 42
+    n = 1 << 16
+    rho = 0.5
+    b1, b2, b3 = 3, 2, 10
+    cov_mat = np.identity(2)
+    cov_mat[0, 1] = cov_mat[1, 0] = rho
+    DataType = "x1x2"
+
+    if DataType == "x1x2":
+        np.random.seed(seed)
+        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+        y = yf(X[:, 0], X[:, 1])
+        plot_start, plot_end = -1.5, 1.5
+        Num_identity = 0
+    elif DataType == "x1x2L":
+        np.random.seed(seed)
+        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+        y = yf(X[:, 0], X[:, 1])
+        plot_start, plot_end = -1.5
+        Num_identity = 0
+    elif DataType == "x1x2x3":
+        np.random.seed(seed)
+        cov_mat3 = np.full((3, 3), rho)
+        np.fill_diagonal(cov_mat3, 1)
+
+    model, dtrain, dtest = setup_model(X, y, 100)
+    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
+    x_vals = np.linspace(-1.5, 1.5, 200)
+    plot_first_order_components(purified_model_dict, x_vals, b1, b2, b3, rho)
