@@ -14,6 +14,34 @@ import io
 np.set_printoptions(precision=16, suppress=True)
 
 
+##### CLASS TO RETURN #####
+class fANOVA_Result:
+    """
+    Container for fANOVA 2D decomposition results.
+
+    Args:
+        original_model (xgb.Booster): Original unmodified XGBoost model.
+        purified_model (xgb.Booster): Model with interaction effects removed.
+        components (dict): Mapping from feature index tuples to submodels.
+        bias (float): Global base score removed during purification.
+    """
+
+    def __init__(self, original_model, purified_model, purified_model_dict, bias):
+        self.original_model = original_model
+        self.purified_model = purified_model
+        self.purified_model_dict = purified_model_dict
+        self.bias = bias
+
+    def predict_original(self, dmatrix):
+        return self.original_model.predict(dmatrix)
+
+    def predict_purified(self, dmatrix):
+        return self.purified_model.predict(dmatrix)
+
+    def predict_component(self, feature_tuple, dmatrix):
+        return self.purified_model_dict[feature_tuple].predict(dmatrix)
+
+
 ##### TREE HELPER FUNCTIONS #####
 def load_model_from_memory(file_path):
     """
@@ -23,21 +51,6 @@ def load_model_from_memory(file_path):
     Returns:
         xgb.Booster: Loaded Booster object.
     """
-    # with open(file_path, "r") as f:
-    #     model_dict = json.load(f)
-
-    # json_str = json.dumps(model_dict)
-    # model_bytes = json_str.encode("utf-8")
-
-    # booster = xgb.Booster()
-    # booster.load_model(model_bytes)
-    # return booster
-
-    # model_dict = json.loads(open(file_path).read())
-
-    # with open(file_path, "w") as file:
-    #     json.dump(model_dict, file)
-
     new_model = xgb.Booster()
     new_model.load_model(file_path)
     return new_model
@@ -1021,7 +1034,7 @@ def fANOVA_2D(
         original_model, purified_model, model_dict, bias = load_cached_fANOVA_models(
             prefix, output_folder="loaded_models"
         )
-        return original_model, purified_model, model_dict, bias
+        return fANOVA_Result(original_model, purified_model, model_dict, bias)
 
     else:
         # Get all features
@@ -1031,6 +1044,9 @@ def fANOVA_2D(
         # Save model to file with new name
         original_model_file = get_model_file(
             model, save_to_disk, f"{prefix}_original_model.json"
+        )
+        original_model = get_model(
+            original_model_file, save_to_disk, f"{prefix}_original_model.json"
         )
 
         # Purify Model
@@ -1058,7 +1074,8 @@ def fANOVA_2D(
             [prefix + "_component_" + str(tup) for tup in all_nonempty_subsets],
         )
 
-        model_dict = {}
+        # Add submodels to submodel_dict
+        submodel_dict = {}
 
         for subset, submodel in zip(all_nonempty_subsets, filtered_model_list):
             # Reset bias to 0 (don't want to overcount)
@@ -1066,17 +1083,17 @@ def fANOVA_2D(
 
             # # new stuff
             submodel_file = get_model_file(
-                submodel, True, prefix + "_component_" + str(subset)
+                submodel, save_to_disk, prefix + "_component_" + str(subset)
             )
             submodel_file["learner"]["learner_model_param"]["base_score"] = "0.0"
             submodel = get_model(
-                submodel_file, True, prefix + "_component_" + str(subset)
+                submodel_file, save_to_disk, prefix + "_component_" + str(subset)
             )
             # # end new stuff
 
-            model_dict[subset] = submodel
+            submodel_dict[subset] = submodel
 
-        return model, purified_model, model_dict, bias
+        return fANOVA_Result(original_model, purified_model, submodel_dict, bias)
 
 
 ####### NEW STUFF #######
@@ -1121,26 +1138,24 @@ if __name__ == "__main__":
                 verbose_eval=True,
             )
 
-        og, pure, pure_dict, bias = fANOVA_2D(False, model, dtrain, True, "test")
-        print(og.predict(dtrain))
-        print(pure.predict(dtrain))
-        print(pure_dict)
-        print(bias)
+        my_f = fANOVA_2D(False, model, dtrain, True, "test")
+        print(my_f.original_model.predict(dtrain))
+        print(my_f.purified_model.predict(dtrain))
+        print(my_f.bias)
 
         print("BREAK!!")
-        for feature_tuple, submodel in pure_dict.items():
+        for feature_tuple, submodel in my_f.purified_model_dict.items():
             print(submodel.predict(dtrain))
 
     if True:
         dtrain = xgb.DMatrix("dtrain.buffer")
-        og, pure, pure_dict, bias = fANOVA_2D(True, None, dtrain, True, "test")
-        print(og.predict(dtrain))
-        print(pure.predict(dtrain))
-        print(pure_dict)
-        print(bias)
+        my_f = fANOVA_2D(True, None, dtrain, True, "test")
+        print(my_f.original_model.predict(dtrain))
+        print(my_f.purified_model.predict(dtrain))
+        print(my_f.bias)
 
         print("BREAK!!")
-        for model in pure_dict.values():
+        for model in my_f.purified_model_dict.values():
             print(model.predict(dtrain))
 
     # config = json.loads(model.save_config())
