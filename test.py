@@ -490,9 +490,6 @@ def plot_components(y_pred_func, x_vals, y_ref_func):
     return fig1, fig2
 
 
-######
-
-
 def test_purified_mean_zero(X, y, epsilon=1, C=0):
     """
     Check that f(x1, x2) component has mean 0 over a slice of data where one feature is ~ constant
@@ -550,13 +547,15 @@ def test_purity(X, y):
     model, dtrain, dtest = setup_model(X, y)
 
     # Decompose
-    _, comp_dict, _ = purify.fANOVA_2D(model, dtrain)  # returns {name: Booster}, bias
+    _, purified_model_dict, _ = purify.fANOVA_2D(
+        model, dtrain
+    )  # returns {name: Booster}, bias
 
     # Loop through every component (skip bias)
-    for name, booster in comp_dict.items():
+    for feature_tuple, booster in purified_model_dict.items():
         # Training set
         pred_train = booster.predict(dtrain)
-        _zero_mean_assert(pred_train, TRAIN_ATOL, name, "train")
+        _zero_mean_assert(pred_train, TRAIN_ATOL, feature_tuple, "train")
 
         # # Test set
         # pred_test = booster.predict(dtest)
@@ -859,6 +858,6 @@ if __name__ == "__main__":
         np.fill_diagonal(cov_mat3, 1)
 
     model, dtrain, dtest = setup_model(X, y, 100)
-    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
+    my_f = purify.fANOVA_2D(False, model, dtrain, True, "test_py")
     x_vals = np.linspace(-1.5, 1.5, 200)
-    plot_components_ben(purified_model_dict, x_vals, b1, b2, b3, rho)
+    plot_components_ben(my_f.purified_model_dict, (0,), x_vals, yf)

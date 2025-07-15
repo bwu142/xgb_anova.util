@@ -385,6 +385,7 @@ def new_three_node_tree(
     return new_tree
 
 
+# Merge these functions
 def new_five_node_tree_left(
     root_split_index,
     root_split_condition,
@@ -656,6 +657,7 @@ def get_and_subtract_means_seven_nodes(tree, node_axis_index, dataset):
     A_index, B_index, C_index, D_index = get_ordered_leaves(tree, 0)[0]
     num_leaves = {A_index: 0, B_index: 0, C_index: 0, D_index: 0}
 
+    # np.add.at --> bin sum (vectorized, one loop)
     for test_point in X:
         leaf_index = traverse_tree(tree, test_point)
         num_leaves[leaf_index] += 1
@@ -663,7 +665,7 @@ def get_and_subtract_means_seven_nodes(tree, node_axis_index, dataset):
     num_A, num_B, num_C, num_D = [num for num in num_leaves.values()]
 
     # Split by root index (AB vs. CD)
-    if node_axis_index == 0:
+    if node_axis_index != 0:
         left_total = num_A + num_B
         right_total = num_C + num_D
 
@@ -961,7 +963,6 @@ def purify_2D(
     return new_model
 
 
-# make output into class + add optional load from memory option
 def fANOVA_2D(
     use_cached,
     model=None,
