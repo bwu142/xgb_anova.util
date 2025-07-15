@@ -527,6 +527,7 @@ def test_purified_mean_zero(X, y, epsilon=1, C=0):
             assert np.abs(mean_val) < 0.1
 
 
+# should just take in function and
 def test_purity(X, y):
     """
     for training data, check the means of component functions are zero. Check the means with the test data - the means should be close to zero.

@@ -771,8 +771,9 @@ def purify_five_nodes_two_features(tree, dataset, epsilon=1e-1, max_iter=10):
         total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
-        split_index = tree["split_indices"][0]
-        split_condition = tree["split_conditions"][0]
+        root_left_index = tree["left_children"][0]
+        split_index = tree["split_indices"][root_left_index]
+        split_condition = tree["split_conditions"][root_left_index]
 
         additional_tree = new_three_node_tree(
             mean_left, mean_right, split_index, split_condition, -1
@@ -781,15 +782,12 @@ def purify_five_nodes_two_features(tree, dataset, epsilon=1e-1, max_iter=10):
         new_trees.append(additional_tree)
 
         ##### INTEGRATE OVER AXIS 2: OTHER FEATURE #####
-        root_left_index = tree["left_children"][0]
-        mean_left, mean_right = get_and_subtract_means_seven_nodes(
-            tree, root_left_index, dataset
-        )
+        mean_left, mean_right = get_and_subtract_means_seven_nodes(tree, 1, dataset)
         total_change += abs(mean_left) + abs(mean_right)
 
         ##### COMPENSATE WITH ADDITIONAL ONE-FEATURE-TREE #####
-        split_index = tree["split_indices"][root_left_index]
-        split_condition = tree["split_conditions"][root_left_index]
+        split_index = tree["split_indices"][0]
+        split_condition = tree["split_conditions"][0]
 
         additional_tree = new_three_node_tree(
             mean_left, mean_right, split_index, split_condition, -1
@@ -1097,7 +1095,66 @@ def fANOVA_2D(
         return fANOVA_Result(original_model, purified_model, submodel_dict, bias)
 
 
-####### NEW STUFF #######
+####### TEST HELPERS #######
+def purity_check(dataset, function, dimension, epsilon=0.1):
+    x1 = dataset[:, 0]
+    x2 = dataset[:, 1]
+
+
+# arbitrary function
+# dataset
+# integrate x1, bin by x2 by epsilon
+# each strip should average to 0
+
+
+def compute_binned_means(samples, func, dimension="x2", epsilon=0.1):
+    """
+    Bin the samples by the chosen dimension and compute the mean of the function over each bin.
+
+    Parameters:
+    samples (np.ndarray): Array of shape (N, 2) containing the samples
+    func (callable): Function that takes x1 and x2 as inputs
+    dimension (str): Dimension to bin by ('x1' or 'x2', default: 'x2')
+    epsilon (float): Width of the bins (default: 0.1)
+
+    Returns:
+    tuple: (bin_centers, bin_means), where
+        bin_centers (np.ndarray): Centers of the bins
+        bin_means (np.ndarray): Means of the function over each bin
+    """
+    x1 = samples[:, 0]
+    x2 = samples[:, 1]
+
+    # Choose the dimension to bin by
+    if dimension == "x1":
+        values = x1
+    elif dimension == "x2":
+        values = x2
+    else:
+        raise ValueError("dimension must be 'x1' or 'x2'")
+
+    # Compute the function values
+    function_values = func(x1, x2)
+
+    # Create bins (more efficient implementation)
+    min_val, max_val = np.min(values), np.max(values)
+    n_bins = int(np.ceil((max_val - min_val) / epsilon))
+    bins = np.linspace(min_val, max_val, n_bins + 1)
+    bin_indices = np.digitize(values, bins) - 1
+
+    # Compute mean of function values in each bin (vectorized)
+    bin_means = np.zeros(n_bins + 1)
+    bin_counts = np.zeros(n_bins + 1)
+
+    np.add.at(bin_means, bin_indices, function_values)
+    np.add.at(bin_counts, bin_indices, 1)
+
+    # Avoid division by zero for empty bins
+    mask = bin_counts > 0
+    bin_means[mask] /= bin_counts[mask]
+    bin_means[~mask] = np.nan  # Mark empty bins as NaN
+
+    return bins, bin_counts, bin_means
 
 
 if __name__ == "__main__":
@@ -1140,11 +1197,17 @@ if __name__ == "__main__":
             )
 
         my_f = fANOVA_2D(False, model, dtrain, True, "test")
+        assert np.allclose(
+            my_f.purified_model.predict(dtrain),
+            my_f.original_model.predict(dtrain),
+            atol=1e-5,
+        )
         print(my_f.original_model.predict(dtrain))
         print(my_f.purified_model.predict(dtrain))
         print(my_f.bias)
 
-        print("BREAK!!")
+        # assert fANOVA_2D
+
         for feature_tuple, submodel in my_f.purified_model_dict.items():
             print(submodel.predict(dtrain))
 
