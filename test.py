@@ -339,6 +339,79 @@ def plot_against_true(X, y, b1, b2, b3, rho, plot_start=-1.5, plot_end=1.5):
     fig.show()
 
 
+def plot_components_ben(purified_model_dict, feature_tuple, x_vals, y_ref_func):
+    model = purified_model_dict[feature_tuple]
+
+    if feature_tuple == (0,):
+        # f1
+        X = np.zeros((len(x_vals), 2))
+        X[:, 0] = x_vals
+        dX = xgb.DMatrix(X)
+
+        y_model = model.predict(dX)
+        y_true = y_ref_func(x_vals)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_vals, y=y_true, mode="lines", name="True f1"))
+        fig.add_trace(go.Scatter(x=x_vals, y=y_model, mode="lines", name="Purified f1"))
+        fig.update_layout(
+            title="f1: Purified vs True", xaxis_title="x1", yaxis_title="value"
+        )
+        fig.show()
+
+    elif feature_tuple == (1,):
+        # f2
+        X = np.zeros((len(x_vals), 2))
+        X[:, 1] = x_vals
+        dX = xgb.DMatrix(X)
+
+        y_model = model.predict(dX)
+        y_true = y_ref_func(x_vals)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_vals, y=y_true, mode="lines", name="True f2"))
+        fig.add_trace(go.Scatter(x=x_vals, y=y_model, mode="lines", name="Purified f2"))
+        fig.update_layout(
+            title="f2: Purified vs True", xaxis_title="x2", yaxis_title="value"
+        )
+        fig.show()
+
+    elif feature_tuple == (0, 1):
+        # f12
+        x1, x2 = x_vals
+        X_grid = np.column_stack([x1.ravel(), x2.ravel()])
+        dX = xgb.DMatrix(X_grid)
+
+        y_model = model.predict(dX).reshape(x1.shape)
+        y_true = y_ref_func(x1, x2)
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Contour(
+                z=y_true,
+                x=x1[0],
+                y=x2[:, 0],
+                colorscale="Blues",
+                contours_coloring="lines",
+                name="True f12",
+            )
+        )
+        fig.add_trace(
+            go.Contour(
+                z=y_model,
+                x=x1[0],
+                y=x2[:, 0],
+                colorscale="Reds",
+                contours_coloring="lines",
+                name="Purified f12",
+            )
+        )
+        fig.update_layout(
+            title="f12: Purified vs True", xaxis_title="x1", yaxis_title="x2"
+        )
+        fig.show()
+
+
 def plot_components(y_pred_func, x_vals, y_ref_func):
     """
     y_pred_func: submodel from purified_model_dict
@@ -788,4 +861,4 @@ if __name__ == "__main__":
     model, dtrain, dtest = setup_model(X, y, 100)
     purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
     x_vals = np.linspace(-1.5, 1.5, 200)
-    plot_first_order_components(purified_model_dict, x_vals, b1, b2, b3, rho)
+    plot_components_ben(purified_model_dict, x_vals, b1, b2, b3, rho)

@@ -950,10 +950,11 @@ def purify_2D(
 
 # make output into class + add optional load from memory option
 def fANOVA_2D(
-    model,
-    dataset,
+    use_cached,
+    model=None,
+    dataset=None,
     save_to_disk=True,
-    output_file_name="new_model.json",
+    prefix="",
     output_folder="loaded_models",
 ):
     """
@@ -967,42 +968,115 @@ def fANOVA_2D(
             value (Booster): model
         bias (float)
     """
-    # Get all features
-    num_features = dataset.num_col()
-    feature_indices = list(range(num_features))
 
-    # Purify Model
-    purified_model = purify_2D(
-        model, dataset, save_to_disk, output_file_name, output_folder
-    )
-    purified_model_file = get_model_file(model, save_to_disk)
-    bias = float(purified_model_file["learner"]["learner_model_param"]["base_score"])
+    def load_cached_fANOVA_models(prefix, output_folder="loaded_models"):
+        """
+        Loads the original model, purified model, component models, and bias from disk.
 
-    # Filter Model
-    all_nonempty_subsets = all_combinations(feature_indices)
-    filtered_model_list = get_filtered_model_list(
-        purified_model,
-        all_nonempty_subsets,
-        save_to_disk,
-        [str(tup) for tup in all_nonempty_subsets],
-    )
+        Assumes files are named:
+        - <prefix>_original_model.json       ← original model
+        - <prefix>_purified_model.json       ← purified model
+        - <prefix>_component_(i,).json       ← component models
 
-    model_dict = {}
+        Args:
+            file_path_prefix (str): prefix used to save the models
+            output_folder (str): folder containing the saved models
 
-    for subset, model in zip(all_nonempty_subsets, filtered_model_list):
-        # Reset bias to 0 (don't want to overcount)
-        model.set_param({"base_score": 0.0})
+        Returns:
+            original_model (xgb.Booster)
+            purified_model (xgb.Booster)
+            model_dict (dict): keys = feature index tuples, values = Booster models
+            bias (float)
+        """
+        # Load original model
+        original_path = os.path.join(output_folder, f"{prefix}_original_model.json")
+        original_model = xgb.Booster()
+        original_model.load_model(original_path)
 
-        # new stuff
-        model_file = get_model_file(model)
-        model = get_model(model_file)
-        # end new stuff
+        # Load purified model
+        purified_path = os.path.join(output_folder, f"{prefix}_purified_model.json")
+        purified_model = xgb.Booster()
+        purified_model.load_model(purified_path)
 
-        model_dict[subset] = model
+        # Extract bias
+        with open(purified_path, "r") as f:
+            model_file = json.load(f)
+        bias = float(model_file["learner"]["learner_model_param"]["base_score"])
 
-    # print(model_dict)
+        # --- Load component models ---
+        model_dict = {}
+        for fname in os.listdir(output_folder):
+            if fname.startswith(f"{prefix}_component_") and fname.endswith(".json"):
+                # remove prefix and ".json"
+                subset_str = fname[len(f"{prefix}_component_") : -5]
+                subset = eval(subset_str)  # safely turn "(0, 1)" into tuple
+                component_path = os.path.join(output_folder, fname)
+                component_model = xgb.Booster()
+                component_model.load_model(component_path)
+                model_dict[subset] = component_model
 
-    return purified_model, model_dict, bias
+        return original_model, purified_model, model_dict, bias
+
+    if use_cached:
+        original_model, purified_model, model_dict, bias = load_cached_fANOVA_models(
+            prefix, output_folder="loaded_models"
+        )
+        return original_model, purified_model, model_dict, bias
+
+    else:
+        # Get all features
+        num_features = dataset.num_col()
+        feature_indices = list(range(num_features))
+
+        # Save model to file with new name
+        original_model_file = get_model_file(
+            model, save_to_disk, f"{prefix}_original_model.json"
+        )
+
+        # Purify Model
+        purified_model = purify_2D(
+            model, dataset, save_to_disk, f"{prefix}_purified_model.json", output_folder
+        )
+        purified_model_file = get_model_file(
+            purified_model,
+            save_to_disk,
+            f"{prefix}_purified_model.json",
+            output_folder,
+        )
+
+        # Get Bias
+        bias = float(
+            purified_model_file["learner"]["learner_model_param"]["base_score"]
+        )
+
+        # Filter Model into submodels
+        all_nonempty_subsets = all_combinations(feature_indices)
+        filtered_model_list = get_filtered_model_list(
+            purified_model,
+            all_nonempty_subsets,
+            save_to_disk,
+            [prefix + "_component_" + str(tup) for tup in all_nonempty_subsets],
+        )
+
+        model_dict = {}
+
+        for subset, submodel in zip(all_nonempty_subsets, filtered_model_list):
+            # Reset bias to 0 (don't want to overcount)
+            submodel.set_param({"base_score": 0.0})
+
+            # # new stuff
+            submodel_file = get_model_file(
+                submodel, True, prefix + "_component_" + str(subset)
+            )
+            submodel_file["learner"]["learner_model_param"]["base_score"] = "0.0"
+            submodel = get_model(
+                submodel_file, True, prefix + "_component_" + str(subset)
+            )
+            # # end new stuff
+
+            model_dict[subset] = submodel
+
+        return model, purified_model, model_dict, bias
 
 
 ####### NEW STUFF #######
@@ -1010,66 +1084,90 @@ def fANOVA_2D(
 
 if __name__ == "__main__":
     ##### GENERATE TEST DATA #####
-    n = 1 << 16
-    rho_val = 0  # 0, .5, .9, .999, 1
-    b1, b2, b3 = 3, 2, 10
-    cov_mat = np.identity(2)
-    cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-    X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-    y_true = yf(X[:, 0], X[:, 1])
+    if False:
+        n = 1 << 16
+        rho_val = 0  # 0, .5, .9, .999, 1
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.identity(2)
+        cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+        y_true = yf(X[:, 0], X[:, 1])
 
-    np.random.seed(42)
+        np.random.seed(42)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_true, test_size=0.3, random_state=42
-    )
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_true, test_size=0.3, random_state=42
+        )
 
-    dtrain = xgb.DMatrix(X_train, label=y_train)
-    # dtrain.save_binary("dtrain.buffer")
-    # dtrain = xgb.DMatrix("dtrain.buffer")
-    dtest = xgb.DMatrix(X_test, label=y_test)
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtrain.save_binary("dtrain.buffer")
+        # dtrain = xgb.DMatrix("dtrain.buffer")
+        dtest = xgb.DMatrix(X_test, label=y_test)
+
+        if True:
+            params = {
+                "max_depth": 2,
+                "learning_rate": 1.0,
+                "objective": "reg:squarederror",
+                "random_state": 42,
+            }
+
+            model = xgb.train(
+                params=params,
+                dtrain=dtrain,
+                num_boost_round=100,  # Equivalent to n_estimators
+                evals=[(dtrain, "train"), (dtest, "test")],
+                verbose_eval=True,
+            )
+
+        og, pure, pure_dict, bias = fANOVA_2D(False, model, dtrain, True, "test")
+        print(og.predict(dtrain))
+        print(pure.predict(dtrain))
+        print(pure_dict)
+        print(bias)
+
+        print("BREAK!!")
+        for feature_tuple, submodel in pure_dict.items():
+            print(submodel.predict(dtrain))
 
     if True:
-        params = {
-            "max_depth": 2,
-            "learning_rate": 1.0,
-            "objective": "reg:squarederror",
-            "random_state": 42,
-        }
+        dtrain = xgb.DMatrix("dtrain.buffer")
+        og, pure, pure_dict, bias = fANOVA_2D(True, None, dtrain, True, "test")
+        print(og.predict(dtrain))
+        print(pure.predict(dtrain))
+        print(pure_dict)
+        print(bias)
 
-        model = xgb.train(
-            params=params,
-            dtrain=dtrain,
-            num_boost_round=5,  # Equivalent to n_estimators
-            evals=[(dtrain, "train"), (dtest, "test")],
-            verbose_eval=True,
-        )
+        print("BREAK!!")
+        for model in pure_dict.values():
+            print(model.predict(dtrain))
 
-        config = json.loads(model.save_config())
-        # Add your constant to the base_score
-        config["learner"]["learner_model_param"]["base_score"] = str(
-            float(config["learner"]["learner_model_param"]["base_score"]) + 10
-        )
-        # Save modified config back
-        model.load_config(json.dumps(config))
+    # config = json.loads(model.save_config())
+    # # Add your constant to the base_score
+    # config["learner"]["learner_model_param"]["base_score"] = str(
+    #     float(config["learner"]["learner_model_param"]["base_score"]) + 10
+    # )
+    # # Save modified config back
+    # model.load_config(json.dumps(config))
 
-        original_model_file = get_model_file(model, True, "original_model.json")
-        # model_2 = get_model(original_model_file)
+    # original_model_file = get_model_file(model, True, "original_model.json")
 
-        # print(f"original model prediction: {model.predict(dtrain)[:5]}")
+    # model_2 = get_model(original_model_file)
 
-        # model_copy_file = get_model_file(model, True, "copy.json")
-        # model_copy_file["learner"]["learner_model_param"]["base_score"] = "999.0"
-        # # model.set_param({"base_score": "9999"})
-        # model_copy = get_model(model_copy_file, True, "copy.json")
-        # print(f"new prediction: {model_copy.predict(dtrain)[:5]}")
+    # print(f"original model prediction: {model.predict(dtrain)[:5]}")
 
-        # original_bias = original_model_file["learner"]["learner_model_param"][
-        #     "base_score"
-        # ]
+    # model_copy_file = get_model_file(model, True, "copy.json")
+    # model_copy_file["learner"]["learner_model_param"]["base_score"] = "999.0"
+    # # model.set_param({"base_score": "9999"})
+    # model_copy = get_model(model_copy_file, True, "copy.json")
+    # print(f"new prediction: {model_copy.predict(dtrain)[:5]}")
 
-        # model.save_model("loaded_models/original_model.json")
+    # original_bias = original_model_file["learner"]["learner_model_param"][
+    #     "base_score"
+    # ]
+
+    # model.save_model("loaded_models/original_model.json")
 
     # print(model.predict(dtrain)[:5])
     # model.save_model("loaded_models/test_one.json")
@@ -1081,20 +1179,20 @@ if __name__ == "__main__":
     #### START
     # original_model = xgb.Booster()
     # original_model.load_model("loaded_models/original_model.json")
-    original_model = load_model_from_memory("loaded_models/original_model.json")
-    model_copy = load_model_from_memory("loaded_models/original_model_copy.json")
-    model_10 = load_model_from_memory("loaded_models/original_model_copy10.json")
+    # original_model = load_model_from_memory("loaded_models/original_model.json")
+    # model_copy = load_model_from_memory("loaded_models/original_model_copy.json")
+    # model_10 = load_model_from_memory("loaded_models/original_model_copy10.json")
 
-    def compare_two_models(model_1, model_2, dtrain, shift=0.0):
-        predict_1 = model_1.predict(dtrain)
-        predict_2 = model_2.predict(dtrain) + shift
-        print(f"predict_1: {predict_1}")
-        print(f"predict_2: {predict_2}")
-        print(f"diff: {predict_1[:5] - predict_2[:5]}")
-        print(np.allclose(predict_1, predict_2, atol=1e-9, rtol=0.0))
+    # def compare_two_models(model_1, model_2, dtrain, shift=0.0):
+    #     predict_1 = model_1.predict(dtrain)
+    #     predict_2 = model_2.predict(dtrain) + shift
+    #     print(f"predict_1: {predict_1}")
+    #     print(f"predict_2: {predict_2}")
+    #     print(f"diff: {predict_1[:5] - predict_2[:5]}")
+    #     print(np.allclose(predict_1, predict_2, atol=1e-9, rtol=0.0))
 
-    compare_two_models(model, original_model, dtrain)
-    compare_two_models(model, model_10, dtrain, -10)
+    # compare_two_models(model, original_model, dtrain)
+    # compare_two_models(model, model_10, dtrain, -10)
 
     # load_model_from_memory("loaded_models/original_model.json")
     # print(original_model.predict(dtrain)[:5])
