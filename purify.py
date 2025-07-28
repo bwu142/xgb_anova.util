@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 import xgboost as xgb
 import json
 import os
+import pandas as pd
 
 # SET PARAM BASE IS AN INPUT
 # LOAD THROUGH JSON AND ACTUALLY CHANGE BASE_SCORE KEY
@@ -37,10 +38,6 @@ class fANOVA_Result:
 
     def predict_component(self, feature_tuple, dmatrix):
         return self.purified_model_dict[feature_tuple].predict(dmatrix)
-
-
-class booster:
-    pass
 
 
 ##### TREE HELPER FUNCTIONS #####
@@ -132,6 +129,7 @@ def get_model(
 
 def update_metadata(model_file, base_score="0.0"):
     """
+    Updates model metadata based on the tree list in the model dictionary
     Args:
         model_file (dict):
     Returns:
@@ -152,12 +150,24 @@ def update_metadata(model_file, base_score="0.0"):
         0 for _ in range(num_trees)
     ]
     model_file["learner"]["learner_model_param"]["base_score"] = str(float(base_score))
-    model_file.set_param({"base_score": base_score})
 
     for i, tree in enumerate(trees):
         tree["id"] = i
 
-    model = get_model(model_file, False)
+    # DO WE EVEN NEED THIS???? GOT RID OF WEIRD XGBOOST LIBRARY ERROR THO make sure float-type items are strictly floats MAKE SURE THIS IS OPTIMIZED --> KINDA SLOW?
+    float_requirements = [
+        "base_weights",
+        "loss_changes",
+        "split_conditions",
+        "sum_hessian",
+    ]
+
+    for tree in model_file["learner"]["gradient_booster"]["model"]["trees"]:
+        for key in float_requirements:
+            tree[key] = [float(val) for val in tree[key]]
+
+    model = get_model(model_file, True, "SEETHIS.json")
+    model.set_param({"base_score": base_score})
     return model
 
 
@@ -189,6 +199,54 @@ def get_ordered_leaves(tree, node_index, leaf_indices=None, leaf_vals=None):
     return (leaf_indices, leaf_vals)
 
 
+def get_split_conditions(trees, feature_list):
+    """
+    Args:
+        trees (list): list of json tree (dicts) from booster
+        feature_list (list): list of all possible split_indices
+    Returns:
+        dict:
+            key: split_index
+            value: sorted numpy array of unique split conditions
+    """
+    split_dict = {split_index: set() for split_index in feature_list}
+
+    for tree in trees:
+        for index in range(len(tree["left_children"])):
+            if (
+                tree["left_children"][index] == -1
+                and tree["right_children"][index] == -1
+            ):
+                continue
+            else:
+                split_index = tree["split_indices"][index]
+                split_dict[split_index].add(tree["split_conditions"][index])
+
+    split_dict = {
+        split_index: np.sort(np.array(list(split_condition_set)))
+        for split_index, split_condition_set in split_dict.items()
+    }
+    return split_dict
+
+
+def get_split_indices(tree):
+    """
+    Args:
+        tree (dict): json tree from booster
+    Retunrs:
+        set: values of all unique split_indices along axis
+    """
+    split_indices = set()
+
+    for index in range(len(tree["left_children"])):
+        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
+            continue
+        else:
+            split_indices.add(tree["split_indices"][index])
+
+    return split_indices
+
+
 def all_combinations(indices_list):
     """
     Recursively generate all non-empty subsets of a list of indices.
@@ -208,44 +266,19 @@ def all_combinations(indices_list):
     return [tuple(sub) for sub in result]
 
 
-def get_split_values(tree, split_index):
+def get_data_col(dataset, column_index):
     """
     Args:
-        tree (dict): json tree from booster
-        split_index (int)
-    Retunrs:
-        set: values of all unique splits_conditions along axis
+        dataset (DMatrix):
+        column_indcx (int): column of DMatrix we want
+    Returns:
+        numpy array (N,): column of DMatrix in a 1D numpy array vector format
     """
-    split_values = set()
-
-    # get all indices that aren't leaves (are splits) and split on the feature we want
-    for index in range(len(tree["left_children"])):
-        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
-            continue
-        elif tree["split_index"][index] == split_index:
-            split_values.add(tree["split_conditions"][index])
-
-    return split_values
-
-    # return leaf values
-
-
-def get_split_indices(tree):
-    """
-    Args:
-        tree (dict): json tree from booster
-    Retunrs:
-        set: values of all unique split_indices along axis
-    """
-    split_indices = set()
-
-    for index in range(len(tree["left_children"])):
-        if tree["left_children"][index] == -1 and tree["right_children"][index] == -1:
-            continue
-        else:
-            split_indices.add(tree["split_indices"][index])
-
-    return split_indices
+    data_col = dataset.get_data()[:, column_index]
+    # Check for scipy sparse matrix
+    if hasattr(data_col, "toarray"):
+        data_col = data_col.toarray().flatten()
+    return data_col
 
 
 ##### TREE FILTERING #####
@@ -386,53 +419,7 @@ def get_filtered_model_list(
 
 
 ##### CREATING NEW TREES #####
-# U
-def new_three_node_tree(
-    leaf_val_left, leaf_val_right, split_index, split_condition, new_id
-):
-    """
-    Args:
-        leaf_val_left (float):
-        leaf_val_right (float):
-        split_index (int): 0-indexing
-        split_condition (float):
-        new_id (int):
-
-    Returns:
-        dictionary: 2-node, depth-1 tree
-    """
-    leaf_val_left = float(leaf_val_left)
-    leaf_val_right = float(leaf_val_right)
-    split_condition = float(split_condition)
-
-    new_tree = {
-        "base_weights": [-0.12812316, leaf_val_left, leaf_val_right],
-        "categories": [],
-        "categories_nodes": [],
-        "categories_segments": [],
-        "categories_sizes": [],
-        "default_left": [0, 0, 0],
-        "id": new_id,
-        "left_children": [1, -1, -1],
-        "loss_changes": [2600824.5, 0.0, 0.0],
-        "parents": [2147483647, 0, 0],
-        "right_children": [2, -1, -1],
-        "split_conditions": [split_condition, leaf_val_left, leaf_val_right],
-        "split_indices": [split_index, 0, 0],
-        "split_type": [0, 0, 0],
-        "sum_hessian": [700.0, 336.0, 364.0],
-        "tree_param": {
-            "num_deleted": "0",
-            "num_feature": str(split_index + 1),
-            "num_nodes": "3",
-            "size_leaf_vector": "1",
-        },
-        "is_compensation": True,
-    }
-    return new_tree
-
-
-def new_five_node_tree(
+def five_node_tree(
     skew,
     root_split_index,
     root_split_condition,
@@ -537,7 +524,7 @@ def new_five_node_tree(
     return new_tree
 
 
-def new_tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
+def tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
     """
     Args:
         grid: 2D numpy array (num_bins_x, num_bins_y) of values (e.g., alphas)
@@ -547,7 +534,140 @@ def new_tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
 
     Returns: A dictionary matching one of the entries in the "trees" list in XGBoost internal format
     """
+    # queue way (level traversal, not post-order)
+    if True:
+        base_weights = []
+        left_children = []
+        right_children = []
+        split_indices = []
+        split_conditions = []
+        parents = []
+        default_left = []
+        split_type = []
+        loss_changes = []
+        sum_hessian = []
 
+        queue = []
+        node_counter = 0
+        node_id_map = {}
+
+        # Enqueue root node info: (x_lo, x_hi, y_lo, y_hi, parent)
+        queue.append((0, grid.shape[0], 0, grid.shape[1], -1))
+
+        while queue:
+            # Dequeue node from front of list
+            x_lo, x_hi, y_lo, y_hi, parent = queue.pop(0)
+
+            cur_index = node_counter
+            node_counter += 1
+            node_id_map[(x_lo, x_hi, y_lo, y_hi)] = cur_index
+
+            width = x_hi - x_lo
+            height = y_hi - y_lo
+
+            is_leaf = width == 1 and height == 1
+
+            if is_leaf:
+                # Leaf node
+                base_weights.append(float(grid[x_lo, y_lo]))
+                left_children.append(-1)
+                right_children.append(-1)
+                split_indices.append(0)
+                split_conditions.append(float(grid[x_lo, y_lo]))
+                parents.append(parent)
+                default_left.append(0)
+                split_type.append(0)
+                loss_changes.append(0)
+                sum_hessian.append(0)
+            else:
+                # Internal node: decide axis by larger dimension
+                if width >= height:
+                    split_axis = 0  # split x
+                    mid = (x_lo + x_hi) // 2
+                    split_value = split_values_x[mid - 1]
+                    base_weights.append(0.0)
+                    left_children.append(None)  # placeholder
+                    right_children.append(None)  # placeholder
+                    split_indices.append(feature_indices[0])
+                    split_conditions.append(float(split_value))
+                    parents.append(parent)
+                    default_left.append(0)
+                    split_type.append(0)
+                    loss_changes.append(0.0)
+                    sum_hessian.append(1.0)
+
+                    # Enqueue children
+                    queue.append((x_lo, mid, y_lo, y_hi, cur_index))
+                    queue.append((mid, x_hi, y_lo, y_hi, cur_index))
+                else:
+                    split_axis = 1  # split y
+                    mid = (y_lo + y_hi) // 2
+                    split_value = split_values_y[mid - 1]
+                    base_weights.append(0.0)
+                    left_children.append(None)
+                    right_children.append(None)
+                    split_indices.append(feature_indices[1])
+                    split_conditions.append(float(split_value))
+                    parents.append(parent)
+                    default_left.append(0)
+                    split_type.append(0)
+                    loss_changes.append(0.0)
+                    sum_hessian.append(1.0)
+
+                    queue.append((x_lo, x_hi, y_lo, mid, cur_index))
+                    queue.append((x_lo, x_hi, mid, y_hi, cur_index))
+
+        # Fix internal node children indices
+        for (x_lo, x_hi, y_lo, y_hi), idx in node_id_map.items():
+            width = x_hi - x_lo
+            height = y_hi - y_lo
+            if width == 1 and height == 1:
+                continue  # leaf has no children
+            if width >= height:
+                mid = (x_lo + x_hi) // 2
+                left_children[idx] = node_id_map[(x_lo, mid, y_lo, y_hi)]
+                right_children[idx] = node_id_map[(mid, x_hi, y_lo, y_hi)]
+            else:
+                mid = (y_lo + y_hi) // 2
+                left_children[idx] = node_id_map[(x_lo, x_hi, y_lo, mid)]
+                right_children[idx] = node_id_map[(x_lo, x_hi, mid, y_hi)]
+
+        return {
+            "base_weights": base_weights,
+            "left_children": left_children,
+            "right_children": right_children,
+            "split_indices": split_indices,
+            "split_conditions": split_conditions,
+            "parents": parents,
+            "default_left": default_left,
+            "split_type": split_type,
+            "loss_changes": loss_changes,
+            "sum_hessian": sum_hessian,
+            "categories": [],
+            "categories_segments": [],
+            "categories_sizes": [],
+            "categories_nodes": [],
+            "id": 0,
+            "tree_param": {
+                "num_deleted": "0",
+                "num_feature": str(max(feature_indices) + 1),
+                "num_nodes": str(len(base_weights)),
+                "size_leaf_vector": "1",
+            },
+        }
+
+
+def tree_from_vector(vector, split_condition_vector, feature_index):
+    """
+    Args:
+        vector (1D numpy array) (N,): should be vector_alphas (containing final values per slice)
+        split_condition_vector (1D numpy array) (N + 1,):
+        feature_index (int):
+    Returns:
+        dict: XGBoost tree (level traversal)
+
+    """
+    # Initialize tree parameters
     base_weights = []
     left_children = []
     right_children = []
@@ -556,56 +676,69 @@ def new_tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
     parents = []
     default_left = []
     split_type = []
-    loss_changes = []  # dummy
-    sum_hessian = []  # dummy
+    loss_changes = []
+    sum_hessian = []
 
-    def recurse(x_lo, x_hi, y_lo, y_hi, parent=-1):
-        current_node = len(parents)
-        # Base case = 1 cell → leaf node
-        if x_hi - x_lo == 1 and y_hi - y_lo == 1:
-            base_weights.append(float(grid[x_lo, y_lo]))
+    # Initialize queue with root node info: (start, end, parent_index)
+    queue = []
+    node_counter = 0
+    node_id_map = {}
+
+    queue.append((0, len(vector), -1))
+
+    # Kinda BFS
+    while queue:
+        # dequeue from front
+        start, end, parent_index = queue.pop(0)
+
+        cur_index = node_counter
+        node_counter += 1
+        node_id_map[(start, end)] = cur_index
+
+        # leaf node
+        is_leaf = False
+        if (end - start) == 1:
+            is_leaf = True
+
+        if is_leaf:
+            base_weights.append(float(vector[start]))
             left_children.append(-1)
             right_children.append(-1)
             split_indices.append(0)
-            split_conditions.append(float(grid[x_lo, y_lo]))
-            parents.append(parent)
+            split_conditions.append(float(vector[start]))
+            parents.append(parent_index)
             default_left.append(0)
             split_type.append(0)
-            loss_changes.append(0)
-            sum_hessian.append(0)
-            return current_node
-
-        # Decide axis: split x if more rows, else y
-        if (x_hi - x_lo) >= (y_hi - y_lo):
-            split_axis = 0
-            mid = (x_lo + x_hi) // 2
-            split_value = split_values_x[mid - 1]
-            left = recurse(x_lo, mid, y_lo, y_hi, parent=current_node)
-            right = recurse(mid, x_hi, y_lo, y_hi, parent=current_node)
+            loss_changes.append(0.0)
+            sum_hessian.append(1.0)
         else:
-            split_axis = 1
-            mid = (y_lo + y_hi) // 2
-            split_value = split_values_y[mid - 1]
-            left = recurse(x_lo, x_hi, y_lo, mid, parent=current_node)
-            right = recurse(x_lo, x_hi, mid, y_hi, parent=current_node)
+            mid = (start + end) // 2
+            split_val = split_condition_vector[mid - 1]
 
-        # Internal node
-        base_weights.append(0.0)
-        left_children.append(left)
-        right_children.append(right)
-        split_indices.append(feature_indices[split_axis])
-        split_conditions.append(float(split_value))
-        parents.append(parent)
-        default_left.append(0)
-        split_type.append(0)
-        loss_changes.append(0.0)
-        sum_hessian.append(1.0)
+            base_weights.append(0.0)
+            left_children.append(None)
+            right_children.append(None)
+            split_indices.append(feature_index)
+            split_conditions.append(float(split_val))
+            parents.append(parent_index)
+            default_left.append(1)
+            split_type.append(0)
+            loss_changes.append(0.0)
+            sum_hessian.append(1.0)
 
-        return current_node
+            # enqueue left and right children
+            queue.append((start, mid, cur_index))
+            queue.append((mid, end, cur_index))
 
-    recurse(0, grid.shape[0], 0, grid.shape[1])
+    # After all nodes are processed, fill in children indices
+    for (start, end), idx in node_id_map.items():
+        if (end - start) == 1:
+            continue  # leaf nodes, no children
+        mid = (start + end) // 2
+        left_children[idx] = node_id_map[(start, mid)]
+        right_children[idx] = node_id_map[(mid, end)]
 
-    return {
+    result = {
         "base_weights": base_weights,
         "left_children": left_children,
         "right_children": right_children,
@@ -623,11 +756,13 @@ def new_tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
         "id": 0,
         "tree_param": {
             "num_deleted": "0",
-            "num_feature": str(max(feature_indices) + 1),
+            "num_feature": str(feature_index + 1),
             "num_nodes": str(len(base_weights)),
             "size_leaf_vector": "1",
         },
     }
+
+    return result
 
 
 ##### DEPTH-2 TREE PURIFICATION HELPER FUNCTIONS #####
@@ -637,9 +772,7 @@ def split_tree(tree):
         tree (dictionary): 7-node, depth-2 tree in model_file
 
     Returns:
-        list of tuples [(dictionary, bool), (dictionary, bool)]: list of tuples:
-            tup[0] --> new 5-node tree
-            tup[1] --> True if tup[0] contains one feature only
+        list: tree_left, tree_right (each are dicts)
     """
     ##### GET TREE INFO #####
 
@@ -656,13 +789,6 @@ def split_tree(tree):
     root_right_split_index = tree["split_indices"][root_right_index]
     root_right_split_condition = tree["split_conditions"][root_right_index]
 
-    # Check for case where splitting (x_i has children x_i and x_j)
-    left_tree_one_feature, right_tree_one_feature = False, False
-    if root_split_index == root_left_split_index:
-        left_tree_one_feature = True
-    elif root_split_index == root_right_split_index:
-        right_tree_one_feature = True
-
     # Depth 2
     A_index, B_index, C_index, D_index = get_ordered_leaves(tree, 0)[0]
 
@@ -674,7 +800,7 @@ def split_tree(tree):
     )
 
     # Get new trees
-    tree_left = new_five_node_tree(
+    tree_left = five_node_tree(
         "left",
         root_split_index,
         root_split_condition,
@@ -684,7 +810,7 @@ def split_tree(tree):
         B_val,
         -1,
     )
-    tree_right = new_five_node_tree(
+    tree_right = five_node_tree(
         "right",
         root_split_index,
         root_split_condition,
@@ -694,90 +820,19 @@ def split_tree(tree):
         D_val,
         -1,
     )
-    return [(tree_left, left_tree_one_feature), (tree_right, right_tree_one_feature)]
-
-
-def classify_new_trees(left_tree_info, right_tree_info):
-    """
-    Args: (from output of split_tree)
-        left_tree_info (tup):
-            tup[0]: dictionary
-            tup[1]: bool
-        right_tree_info (tup):
-    Returns:
-        two lists:
-            list_1: trees to append to tree_list_one_features
-            list_2: trees to append to tree_list_two_features
-    """
-    list_1, list_2 = [], []
-    if left_tree_info[1] is True:
-        list_1.append(left_tree_info[0])
-        list_2.append(right_tree_info[0])
-    elif right_tree_info[1] is True:
-        list_1.append(right_tree_info[0])
-        list_2.append(left_tree_info[0])
-    else:
-        list_2.append(left_tree_info[0])
-        list_2.append(right_tree_info[0])
-    return list_1, list_2
-
-
-def split_node(tree, leaf_index, node_index):
-    """
-    Args:
-        tree (dictionary): 5-node depth-2 tree from model_file
-        leaf_index (int): index of leaf that will be replaced with a split node
-        node_index (int): index of node that our added split will replicate
-
-    Returns:
-        None
-    Mutates tree by changing leaf_index to a depth-1 split mimicing split at node_index
-    """
-    # properties of original leaf
-    new_leaf_val = float(tree["base_weights"][leaf_index])
-
-    # indices of new leaf nodes
-    new_left_leaf_index = len(tree["base_weights"])
-    new_right_leaf_index = new_left_leaf_index + 1
-
-    # Add two new leaf nodes
-    tree["base_weights"].extend([new_leaf_val, new_leaf_val])
-    tree["left_children"].extend([-1, -1])
-    tree["right_children"].extend([-1, -1])
-    tree["split_indices"].extend([0, 0])
-    tree["split_conditions"].extend([new_leaf_val, new_leaf_val])
-
-    tree["parents"].extend([leaf_index, leaf_index])
-    tree["default_left"].extend([0, 0])
-    tree["loss_changes"].extend([0.0, 0.0])
-    tree["split_type"].extend([0, 0])
-    tree["sum_hessian"].extend([0.0, 0.0])
-
-    # Update original leaf node into a split node
-    tree["base_weights"][leaf_index] = 0
-    tree["left_children"][leaf_index] = new_left_leaf_index
-    tree["right_children"][leaf_index] = new_right_leaf_index
-    tree["split_indices"][leaf_index] = tree["split_indices"][node_index]
-    tree["split_conditions"][leaf_index] = tree["split_conditions"][node_index]
-
-    # Update other parameters
-    tree["tree_param"]["num_nodes"] = str(len(tree["base_weights"]))
-
-    # Make sure necessary items are float types
-    float_keys = ["base_weights", "split_conditions", "loss_changes", "sum_hessian"]
-    for k in float_keys:
-        tree[k] = [float(v) for v in tree[k]]
-
-    return
+    return [tree_left, tree_right]
 
 
 ##### PURIFICATION #####
-def purify_two_features(submodel, feature_tuple, dataset, epsilon=1e-1, max_iter=10):
+def purify_two_features(
+    submodel, dataset, split_conditions_dict, feature_tuple, epsilon=1e-1, max_iter=10
+):
     """
     Args:
         submodel (Booster): XGBoost model
-        feature_tuple (tuple):
         dataset (DMatrix):
+        split_conditions_dict (dict):
+        feature_tuple (tuple):
         epsilon (float): if change is less than epsilon, END EARLY
         max_iter (int): max number of iterations
 
@@ -785,38 +840,28 @@ def purify_two_features(submodel, feature_tuple, dataset, epsilon=1e-1, max_iter
         List: list of tree (dictionaries) that are 1-feature compensations for purification
     Mutates "tree" such that its axes have a mean of 0 (purification)
     """
-    # get submodel from feature_tuple
-    submodel_file = get_model_file(submodel, False)
-    trees = submodel_file["learner"]["gradient_booster"]["model"]["trees"]
-
     ##### BUILD GRIDS #####
 
     # get unique split values --> these divide up the axes
-    split_values_x = set()
-    split_values_y = set()
-    for tree in trees:
-        split_values_x |= get_split_values(tree, feature_tuple[0])
-        split_values_y |= get_split_values(tree, feature_tuple[1])
-
-    split_values_x = sorted(np.array(split_values_x))  # len = Bx - 1
-    split_values_y = sorted(np.array(split_values_y))  # len = By - 1
+    split_condition_vector_x = split_conditions_dict[feature_tuple[0]]  # len = Bx - 1
+    split_condition_vector_y = split_conditions_dict[feature_tuple[1]]  # len = By - 1
 
     # initialize grid_alphas to 0.0
-    num_bins_x = len(split_values_x) + 1  # Bx
-    num_bins_y = len(split_values_y) + 1  # By
+    num_bins_x = len(split_condition_vector_x) + 1  # Bx
+    num_bins_y = len(split_condition_vector_y) + 1  # By
 
     grid_alphas = np.zeros((num_bins_x, num_bins_y))
 
-    # get grid_predictions (prediction values from submodel)
-    data_x_col = dataset.get_data()[:, feature_tuple[0]]  # (N x 1)
-    data_y_col = dataset.get_data()[:, feature_tuple[1]]  # (N x 1)
+    # get grid_predictions (prediction values from submodel) (N, 1) --> (N,)
+    data_x_col = dataset.get_data()[:, feature_tuple[0]]
 
-    x_binned_indices = np.digitize(data_x_col, split_values_x)  # (N x 1)
-    y_binned_indices = np.digitize(data_y_col, split_values_y)  # (N x 1)
+    data_x_col = get_data_col(dataset, feature_tuple[0])
+    data_y_col = get_data_col(dataset, feature_tuple[1])
+
+    x_binned_indices = np.digitize(data_x_col, split_condition_vector_x)  # (N x 1)
+    y_binned_indices = np.digitize(data_y_col, split_condition_vector_y)  # (N x 1)
 
     predictions = submodel.predict(dataset)  # (N x 1)
-    grid_prediction_vals = np.zeros((num_bins_x, num_bins_y))  # (Bx x By)
-    np.add.at(grid_prediction_vals, (x_binned_indices, y_binned_indices), predictions)
 
     ##### PURIFY ALONG EACH AXIS UNTIL CONVERGENCE #####
     def get_mean_vector(current_vals, binned_indices, num_bins):
@@ -848,7 +893,8 @@ def purify_two_features(submodel, feature_tuple, dataset, epsilon=1e-1, max_iter
         # integrate over x-axis
         current_prediction_vector = (
             grid_alphas[x_binned_indices, y_binned_indices] + predictions
-        )  # (N x 1)
+        )
+        # ^^ (N x 1) --> Each element in vector is (the original prediction for that point using the original model, plus the correction (mean-centering) prediction from grid_alphas
         row_means = get_mean_vector(
             current_prediction_vector, y_binned_indices, num_bins_y
         )
@@ -873,127 +919,81 @@ def purify_two_features(submodel, feature_tuple, dataset, epsilon=1e-1, max_iter
             break
 
     ##### CREATE TREE #####
-    alpha_tree = new_tree_from_grid(
-        grid_alphas, split_values_x, split_values_y, feature_tuple
+    alpha_tree = tree_from_grid(
+        grid_alphas, split_condition_vector_x, split_condition_vector_y, feature_tuple
     )
 
     ##### RETURN LOWER ORDER VECTORS #####
-    return (alpha_tree, (vector_x, vector_y))
-
-    if False:
-
-        def get_mean_vector(model, bin_edges, feature_index, dataset):
-            """
-            Args:
-                model (Booster):
-                num_bins (int): number of bins corresponding to feature_index axis
-                feature_index (int): index of feature with bins (the one we're not integrating across, i.e. holding constant)
-                dataset (DMatrix):
-            Returns:
-                numpy array: vector of means !!!
-            """
-            num_bins = len(bin_edges) + 1
-
-            # vector of 'feature_index'-component of data vals
-            feature_data_col = dataset.get_data()[:, feature_index]
-            # bin data into corresponding bins
-            binned_indices = np.digitize(feature_data_col, bin_edges)
-            # prediction vals per datapoint
-            predictions = model.predict(dataset)
-            # intialize 0.0 vectors for computing means
-            sum_vector = np.zeros(num_bins)
-            count_vector = np.zeros(num_bins)
-            # add prediction value to corresponding bin
-            np.add.at(sum_vector, binned_indices, predictions)
-            np.add.at(count_vector, binned_indices, 1)
-            # compute mean vector
-            mean_vector = np.zeros(num_bins)
-            nonzero_mask = count_vector > 0
-            mean_vector[nonzero_mask] = (
-                sum_vector[nonzero_mask] / count_vector[nonzero_mask]
-            )
-
-            return mean_vector
-
-        diff = float("inf")
-
-        # bin datapoints
-        data_x_col = dataset.get_data()[:, feature_tuple[0]]
-        data_y_col = dataset.get_data()[:, feature_tuple[1]]
-
-        x_indices = np.digitize(data_x_col, split_values_x)
-        y_indices = np.digitize(data_y_col, split_values_y)
-
-        # initialize grid values to 0.0
-        num_bins_x = len(split_values_x) + 1
-        num_bins_y = len(split_values_y) + 1
-
-        grid_values = np.zeros((num_bins_x, num_bins_y))
-        predictions = model.predict(dataset)
-
-        feature_index = feature_tuple[1]
-        feature_data_col = dataset.get_data()[:, feature_index]
-        binned_indices = np.digitize(feature_data_col, y_indices)
-
-        def get_mean(predictions, grid_values, feature_index, axis, binned_indices):
-            num_bins = grid_values.shape[axis]
-
-            sum_vector = np.zeros(num_bins)
-            count_vector = np.zeros(num_bins)
-
-            np.add.at(sum_vector, binned_indices, predictions)
-            np.add.at(count_vector, binned_indices, 1)
-
-        for _ in range(max_iter):
-            # integrate over x-axis
-
-            mean_vector = get_mean_vector(submodel, y_indices, dataset)
-
-            # integrate over y-axis
+    return ((vector_x, vector_y), alpha_tree)
 
 
 def purify_one_feature(
-    submodel, feature_tuple, dataset, intial_vectors, epsilon=1e-1, max_iter=10
+    submodel,
+    dataset,
+    split_conditions_dict,
+    alpha_vectors_dict,
+    feature_tuple,
+    epsilon=1e-1,
+    max_iter=10,
 ):
     """
     Args:
-        intial_vectors (tuple): tuple of numpy arrays
+        submodel (Booster object): XGBoost model
+        dataset (DMatrix):
+        split_conditions_dict (dict):
+        feature_tuple (tuple): length one feature tuple
+        epsilon (float):
+        max_iter (int):
+
+    Returns:
+        tuple:
+            mean_offset (float):
+            alpha_tree (dict): json XGBoost tree
     """
-    vector_alpha_x, vector_alpha_y = intial_vectors
+    # get unique split values --> these divide up the axes
+    split_condition_vector = split_conditions_dict[feature_tuple[0]]  # len = Bx - 1
 
-    # get submodel from feature_tuple
-    submodel_file = get_model_file(submodel, False)
-    trees = submodel_file["learner"]["gradient_booster"]["model"]["trees"]
+    # initialize vector_alphas to 0.0
+    num_bins = len(split_condition_vector) + 1  # Bx
+    vector_alpha = alpha_vectors_dict[feature_tuple[0]]  # (Bx x 1)
 
-    # split_values = set()
-    # for tree in trees:
-    #     split_values |= get_split_values(tree, feature_index)
-    # split_values = sorted(np.array(split_values))
-    # num_bins = len(split_values) + 1
+    # get vector_predictions (prediction values from submodel)
+    data_col = dataset.get_data()[:, feature_tuple[0]]
+    binned_indices = np.digitize(data_col, split_condition_vector)
 
-    # # --- BIN DATA ---
-    # data_col = dataset.get_data()[:, feature_index]
-    # binned_indices = np.digitize(data_col, split_values)
-    # predictions = submodel.predict(dataset)  # (N,)
+    predictions = submodel.predict(dataset)
+    vector_prediction_vals = np.zeros(num_bins)
+    np.add.at(vector_prediction_vals, binned_indices, predictions)
 
-    # # --- PURIFY UNTIL CONVERGENCE ---
-    # alpha = np.zeros(num_bins)
-    # for _ in range(max_iter):
-    #     prev_alpha = alpha.copy()
-    #     # Value for each point: alpha[bin] + pred
-    #     current_vals = alpha[binned_indices] + predictions
-    #     bin_means = np.zeros(num_bins)
-    #     count_vector = np.zeros(num_bins)
-    #     np.add.at(bin_means, binned_indices, current_vals)
-    #     np.add.at(count_vector, binned_indices, 1)
-    #     nonzero = count_vector > 0
-    #     bin_means[nonzero] /= count_vector[nonzero]
-    #     alpha -= bin_means  # move into mean, as in 2D version
+    mean_offset = 0.0
 
-    #     if np.abs(alpha - prev_alpha).max() < epsilon:
-    #         break
+    def get_bin_means(current_vals, binned_indices, num_bins):
+        sum_vector = np.zeros(num_bins)
+        count_vector = np.zeros(num_bins)
+        np.add.at(sum_vector, binned_indices, current_vals)
+        np.add.at(count_vector, binned_indices, 1)
 
-    # return alpha, split_values
+        mean_vector = np.zeros(num_bins)  # (Bx x 1)
+        nonzero = count_vector > 0
+        mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
+        return mean_vector
+
+    for _ in range(max_iter):
+        prev_vector_alpha = vector_alpha.copy()
+        current_vals = vector_alpha[binned_indices] + predictions
+        bin_means = get_bin_means(current_vals, binned_indices, num_bins)
+
+        vector_alpha -= bin_means
+        mean_offset += bin_means.mean()  #### a little unsure about this
+
+        if np.abs(vector_alpha - prev_vector_alpha).max() < epsilon:
+            break
+
+    alpha_tree = tree_from_vector(
+        vector_alpha, split_condition_vector, feature_tuple[0]
+    )
+
+    return mean_offset, alpha_tree
 
 
 def purify_2D(
@@ -1019,8 +1019,9 @@ def purify_2D(
     # Get all trees indices with interaction
     feature_tuples_main_effect = []
     feature_tuples_interaction = []
+    feature_list = list(range(dataset.num_col()))
 
-    all_feature_combinations = all_combinations(list(range(dataset.num_col())))
+    all_feature_combinations = all_combinations(feature_list)
     for feature_tuple in all_feature_combinations:
         if len(feature_tuple) == 1:
             feature_tuples_main_effect.append(feature_tuple)
@@ -1042,7 +1043,7 @@ def purify_2D(
 
     # Append trees to appropriate lists
     for i, tree in enumerate(tree_list_all):
-        # 0-feature tree
+        # 0-feature (depth-0, 1-node) tree
         if len(tree["base_weights"]) == 1:
             bias_tree_vals.append(tree["base_weights"][0])
         # interaction tree (2-3 features)
@@ -1052,12 +1053,8 @@ def purify_2D(
                 int(tree["tree_param"]["num_nodes"]) == 7
                 and len(get_split_indices(tree)) == 3
             ):
-                left_tree_info, right_tree_info = split_tree(tree)
-                one_feature_trees, two_feature_trees = classify_new_trees(
-                    left_tree_info, right_tree_info
-                )
-                tree_list_one_feature.extend(one_feature_trees)
-                tree_list_two_features.extend(two_feature_trees)
+                new_trees = split_tree(tree)
+                tree_list_two_features.extend(new_trees)
             # 5-node 2-feature or 7-node 2-feature f(x_i, x_j, x_j)
             else:
                 tree_list_two_features.append(tree)
@@ -1070,61 +1067,53 @@ def purify_2D(
         tree_list_one_feature + tree_list_two_features
     )
     updated_model = update_metadata(model_file, "0.0")
+    alpha_tree_list = []
+
+    # get bins for each feature
+    split_conditions_dict = get_split_conditions(
+        tree_list_one_feature + tree_list_two_features, feature_list
+    )
+
+    alpha_vectors_dict = {
+        feature_index: np.zeros(len(split_conditions_dict[feature_index]))
+        for feature_index in feature_list
+    }
 
     ##### PURIFY EACH f(x_i, x_j) TREE #####
-    one_feature_vectors = {}
     for feature_tuple in feature_tuples_interaction:
-        submodel = get_filtered_model(
-            updated_model, feature_tuple, save_to_disk, output_file_name, output_folder
+        submodel = get_filtered_model(updated_model, feature_tuple, False)
+        alpha_vectors, alpha_tree_two = purify_two_features(
+            submodel, dataset, split_conditions_dict, feature_tuple
         )
-        feature_one, feature_two = feature_tuple[0], feature_tuple[1]
 
-        if feature_one in one_feature_vectors:
-            one_feature_vectors[feature_one] += feature_one
-
-        one_feature_vectors[feature_tuple] = purify_two_features(
-            submodel, feature_tuple, dataset
-        )[1]
+        # POSSIBLE ERROR: check if feature_tuple corresopnds to correct alpha vector
+        alpha_tree_list.append(alpha_tree_two)
+        for feature, alpha_vector in zip(feature_tuple, alpha_vectors):
+            alpha_vectors_dict[feature] += alpha_vector
 
     ##### PURIFY EACH f(x1), f(x2), TREE #####
-    new_base_score = float(model_file["learner"]["learner_model_param"]["base_score"])
-
     for feature_tuple in feature_tuples_main_effect:
-        submodel = get_filtered_model(
-            updated_model, feature_tuple, save_to_disk, output_file_name, output_folder
+        submodel = get_filtered_model(updated_model, feature_tuple, False)
+        mean, alpha_tree_one = purify_one_feature(
+            submodel, dataset, split_conditions_dict, alpha_vectors_dict, feature_tuple
         )
-        alpha_vectors = one_feature_vectors[feature_tuple]
+
+        alpha_tree_list.append(alpha_tree_one)
 
     ##### ADD 0-feature trees to bias #####
+    new_base_score = original_base_score + mean
     for bias_val in bias_tree_vals:
         new_base_score += bias_val
 
     ##### UPDATE TREES #####
     model_file["learner"]["gradient_booster"]["model"]["trees"] = (
-        tree_list_two_features + tree_list_one_feature
+        tree_list_two_features + tree_list_one_feature + alpha_tree_list
     )
-
-    model_file["learner"]["learner_model_param"]["base_score"] = str(new_base_score)
 
     ##### UPDATE MODEL METADATA #####
-    num_trees = len(model_file["learner"]["gradient_booster"]["model"]["trees"])
-
-    model_file["learner"]["gradient_booster"]["model"]["gbtree_model_param"][
-        "num_trees"
-    ] = str(num_trees)
-    model_file["learner"]["gradient_booster"]["model"]["iteration_indptr"] = list(
-        range(num_trees + 1)
-    )
-    model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [0] * num_trees
-
-    for i, tree in enumerate(
-        model_file["learner"]["gradient_booster"]["model"]["trees"]
-    ):
-        tree["id"] = i
+    new_model = update_metadata(model_file, str(float(new_base_score)))
 
     ##### SAVE AND RETURN #####
-    new_model = get_model(model_file, save_to_disk, output_file_name, output_folder)
-    new_model.set_param({"base_score": new_base_score})
     return new_model
 
 
@@ -1327,7 +1316,11 @@ def compute_binned_means(samples, func, dimension="x2", epsilon=0.1):
 
 if __name__ == "__main__":
     ##### GENERATE TEST DATA #####
-    if True:
+    tree_from_vector(
+        None, np.array([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]), None
+    )
+
+    if False:
         n = 1 << 16
         rho_val = 0  # 0, .5, .9, .999, 1
         b1, b2, b3 = 3, 2, 10

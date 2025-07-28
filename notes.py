@@ -18,6 +18,12 @@ print(x)
 x = np.ones((2, 3))
 print(x.shape[1])
 
+x = np.zeros((2, 3))
+print(f"numpy zeroes: {x}")
+
+x = np.array([10, 10, 10])
+print(x.shape)
+
 
 def quick_sort(arr, simulation=False):
     """Quick sort
