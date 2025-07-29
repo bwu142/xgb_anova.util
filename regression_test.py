@@ -95,15 +95,6 @@ def test_grid_to_tree(
     assert np.allclose(test_model_prediction, true_prediction, atol=1e-4, rtol=0.0)
 
 
-##### REGRESSION TESTS #####
-def test_purify_two_features_equality(
-    alpha_tree, dataset, original_prediction, split_conditions_dict
-):
-
-    alpha_prediction = alpha_tree_predict(alpha_tree, dataset)
-    data = dataset.get_data()
-
-
 def test_purify_two_features_all_pairs(model, dataset):
     """
     Test purification for all feature pairs (2-way interactions).
@@ -175,20 +166,80 @@ def test_purify_one_feature():
 def test_purity(model, dataset):
     # Run purification
     new_model = purify.purify_2D(model, dataset, save_to_disk=False)
+    all_combinations = purify.all_combinations(list(range(dataset.num_col)))
 
-    # Extract trees and related data (you may need custom code)
-    trees = purify.get_model_file(new_model, True)["learner"]["gradient_booster"][
-        "model"
-    ]["trees"]
-    for tree in trees:
-        base_weights = np.array(tree["base_weights"])
-        if len(base_weights.shape) == 1:
-            # For 1D main effect: mean should be zero
-            assert np.isclose(base_weights.mean(), 0, atol=1e-8)
-        elif len(base_weights.shape) == 2:
-            # For 2D interaction: mean zero across axes
-            assert np.allclose(base_weights.mean(axis=0), 0, atol=1e-8)
-            assert np.allclose(base_weights.mean(axis=1), 0, atol=1e-8)
+    # Get all split thresholds once for all features from the whole model
+    tree_list = purify.get_model_file(model, save_to_disk=False)["learner"][
+        "gradient_booster"
+    ]["model"]["trees"]
+    split_conditions_dict = purify.get_split_conditions(tree_list, purify.feature_list)
+
+    # Iterate through all combinations (main effects and pairwise interactions)
+    for feature_tuple in all_combinations:
+
+        # Filter model to features in tuple
+        submodel = purify.get_filtered_model(model, feature_tuple)
+
+        if len(feature_tuple) == 1:
+            # Purify one feature
+            # Initialize alpha_vectors_dict with zeros (may need to populate from purify_two_features if iterative)
+            alpha_vectors_dict = {
+                f: np.zeros(len(split_conditions_dict[f]) + 1) for f in feature_list
+            }
+            mean_offset, alpha_tree = purify.purify_one_feature(
+                submodel,
+                dataset,
+                split_conditions_dict,
+                alpha_vectors_dict,
+                feature_tuple,
+            )
+
+            # Obtain main effect vector by predicting at bin centers
+            # (Construct bin centers from splits)
+            splits = split_conditions_dict[feature_tuple[0]]
+            # Edges and centers
+            edges = [-np.inf] + splits + [np.inf]
+            bin_centers = [(edges[i] + edges[i + 1]) / 2 for i in range(len(edges) - 1)]
+            X_centers = np.array(bin_centers).reshape(-1, 1)
+            dmat_centers = xgb.DMatrix(X_centers.astype(np.float32))
+            alpha_preds = alpha_tree_predict(
+                alpha_tree, dmat_centers
+            )  # implement alpha_tree_predict
+
+            # Check mean zero
+            assert (
+                abs(np.mean(alpha_preds)) < 1e-6
+            ), f"Feature {feature_tuple[0]} main effect vector not zero-mean"
+
+        elif len(feature_tuple) == 2:
+            # Purify two features
+            alpha_vectors, alpha_tree = purify.purify_two_features(
+                submodel, dataset, split_conditions_dict, feature_tuple
+            )
+            vector_x, vector_y = alpha_vectors
+
+            # Check vector means zero
+            assert (
+                abs(np.mean(vector_x)) < 1e-6
+            ), f"Feature {feature_tuple[0]} vector not zero mean"
+            assert (
+                abs(np.mean(vector_y)) < 1e-6
+            ), f"Feature {feature_tuple[1]} vector not zero mean"
+
+            # Get interaction grid predictions on bin centers (use predict_grid_from_tree helper)
+            grid_alphas = predict_grid_from_tree(
+                alpha_tree, split_conditions_dict, feature_tuple
+            )
+
+            # Check row and column means zero
+            assert np.all(
+                np.abs(np.mean(grid_alphas, axis=0)) < 1e-6
+            ), f"Interaction grid not zero mean along x-axis for {feature_tuple}"
+            assert np.all(
+                np.abs(np.mean(grid_alphas, axis=1)) < 1e-6
+            ), f"Interaction grid not zero mean along y-axis for {feature_tuple}"
+
+    print("Initial binning and zero-mean purity checks done.")
 
 
 def test_equal_predictions(model, dataset):
@@ -198,6 +249,31 @@ def test_equal_predictions(model, dataset):
     print(f"original prediction: {original_prediction[:5]}")
     print(f"purified prediction: {purified_prediction[:5]}")
     assert np.allclose(original_prediction, purified_prediction, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_1(model, dataset):
+    result = purify.fANOVA_2D(False, "test", model, dataset, True)
+    dataset.save_binary("dataset.buffer")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_2(model, dataset):
+    result = purify.fANOVA_2D(True, "test")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
 
 
 if __name__ == "__main__":
@@ -311,10 +387,79 @@ if __name__ == "__main__":
         )
 
     ##### test_purify_two_features #####
+    def check_interaction_purity(
+        grid_alphas, binned_indices_x, binned_indices_y, num_bins_x, num_bins_y
+    ):
+        # Count samples per bin along x and y
+        counts_2d = np.zeros((num_bins_x, num_bins_y))
+        for x_bin, y_bin in zip(binned_indices_x, binned_indices_y):
+            counts_2d[x_bin, y_bin] += 1
+
+        # Weighted means across rows (fixed y)
+        col_means = np.sum(grid_alphas * counts_2d, axis=0) / counts_2d.sum(axis=0)
+        # Weighted means across columns (fixed x)
+        row_means = np.sum(grid_alphas * counts_2d, axis=1) / counts_2d.sum(axis=1)
+
+        # Check near zero, accounting for numerical stability
+        assert np.allclose(
+            col_means, 0, atol=1e-6
+        ), f"Non-zero column means: {col_means}"
+        assert np.allclose(row_means, 0, atol=1e-6), f"Non-zero row means: {row_means}"
+
+    # For 1D main effect vector:
+    def check_main_effect_purity(vector_alpha, binned_indices, num_bins):
+        counts = np.bincount(binned_indices, minlength=num_bins)
+        weighted_mean = np.sum(vector_alpha * counts) / counts.sum()
+        assert (
+            abs(weighted_mean) < 1e-6
+        ), f"Main effect vector not zero mean: {weighted_mean}"
 
     ##### test_purify_one_features #####
 
     ##### test_purity #####
+
+    ##### test_equal_predictions #####
+    if True:
+        n = 1 << 16
+        rho_val = 0  # 0, .5, .9, .999, 1
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.identity(2)
+        cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+        y_true = yf(X[:, 0], X[:, 1])
+
+        np.random.seed(42)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_true, test_size=0.3, random_state=42
+        )
+
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtrain.save_binary("dtrain.buffer")
+        # dtrain = xgb.DMatrix("dtrain.buffer")
+        dtest = xgb.DMatrix(X_test, label=y_test)
+
+        if True:
+            params = {
+                "max_depth": 2,
+                "learning_rate": 1.0,
+                "objective": "reg:squarederror",
+                "random_state": 42,
+            }
+
+            model = xgb.train(
+                params=params,
+                dtrain=dtrain,
+                num_boost_round=10,  # Equivalent to n_estimators
+                evals=[(dtrain, "train"), (dtest, "test")],
+                verbose_eval=True,
+            )
+
+        test_equal_predictions(model, dtrain)
+        test_fANOVA_1(model, dtrain)
+
+    ##### other tests #####
     if False:
         tree = {
             "base_weights": [
@@ -377,42 +522,3 @@ if __name__ == "__main__":
 
         new_model = purify.purify_2D(model, dtrain, True)
         print(f"Purified (New) Prediction: {new_model.predict(dtrain)}")
-
-    ##### test_equal_predictions #####
-    if True:
-        n = 1 << 16
-        rho_val = 0  # 0, .5, .9, .999, 1
-        b1, b2, b3 = 3, 2, 10
-        cov_mat = np.identity(2)
-        cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-        y_true = yf(X[:, 0], X[:, 1])
-
-        np.random.seed(42)
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_true, test_size=0.3, random_state=42
-        )
-
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dtrain.save_binary("dtrain.buffer")
-        # dtrain = xgb.DMatrix("dtrain.buffer")
-        dtest = xgb.DMatrix(X_test, label=y_test)
-
-        if True:
-            params = {
-                "max_depth": 2,
-                "learning_rate": 1.0,
-                "objective": "reg:squarederror",
-                "random_state": 42,
-            }
-
-            model = xgb.train(
-                params=params,
-                dtrain=dtrain,
-                num_boost_round=10,  # Equivalent to n_estimators
-                evals=[(dtrain, "train"), (dtest, "test")],
-                verbose_eval=True,
-            )
-        test_equal_predictions(model, dtrain)

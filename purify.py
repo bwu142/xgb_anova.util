@@ -1155,10 +1155,10 @@ def purify_2D(
 
 def fANOVA_2D(
     use_cached,
+    prefix="",
     model=None,
     dataset=None,
     save_to_disk=True,
-    prefix="",
     output_folder="loaded_models",
 ):
     """
@@ -1234,6 +1234,9 @@ def fANOVA_2D(
         return fANOVA_Result(original_model, purified_model, model_dict, bias)
 
     else:
+        # copy original model (for reference)
+        original_model = model.copy()
+
         # Get all features
         num_features = dataset.num_col()
         feature_indices = list(range(num_features))
