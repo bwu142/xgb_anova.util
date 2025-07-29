@@ -1,4 +1,6 @@
 import numpy as np
+import purify
+import regression_test as rt
 
 x = np.array([-10, 1, 5, 12])
 bins = np.array([0, 2, 4, 6, 8, 10])
@@ -156,3 +158,77 @@ def new_tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
             "size_leaf_vector": "1",
         },
     }
+
+
+def purify_one_feature(
+    submodel,
+    dataset,
+    split_conditions_dict,
+    alpha_vectors_dict,
+    feature_tuple,
+    epsilon=1e-1,
+    max_iter=10,
+):
+    """
+    Args:
+        submodel (Booster object): XGBoost model
+        dataset (DMatrix):
+        split_conditions_dict (dict):
+        feature_tuple (tuple): length one feature tuple
+        epsilon (float):
+        max_iter (int):
+
+    Returns:
+        tuple:
+            mean_offset (float):
+            alpha_tree (dict): json XGBoost tree
+    """
+    # get unique split values --> these divide up the axes
+    split_condition_vector = split_conditions_dict[feature_tuple[0]]  # len = Bx - 1
+
+    # initialize vector_alphas
+    num_bins = len(split_condition_vector) + 1  # Bx
+    vector_alpha = alpha_vectors_dict[feature_tuple[0]]  # (Bx x 1)
+
+    # get vector_predictions (prediction values from submodel)
+    data_col = purify.get_data_col(dataset, feature_tuple[0])
+    binned_indices = np.digitize(data_col, split_condition_vector)
+    predictions = submodel.predict(dataset)
+
+    mean_offset = 0.0
+
+    def get_bin_means(current_vals, binned_indices, num_bins):
+        sum_vector = np.zeros(num_bins)
+        count_vector = np.zeros(num_bins)
+        np.add.at(sum_vector, binned_indices, current_vals)
+        np.add.at(count_vector, binned_indices, 1)
+
+        mean_vector = np.zeros(num_bins)  # (Bx x 1)
+        nonzero = count_vector > 0
+        mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
+        print("MEAN VECTOR", mean_vector)
+        return mean_vector
+
+    for i in range(max_iter):
+        print("purify_one_feature iteration", i)
+        prev_vector_alpha = vector_alpha.copy()
+        current_vals = vector_alpha[binned_indices] + predictions
+        bin_means = get_bin_means(current_vals, binned_indices, num_bins)
+
+        vector_alpha -= bin_means
+        mean_offset += bin_means.mean()  #### a little unsure about this
+
+        # convergence check
+        if np.abs(vector_alpha - prev_vector_alpha).max() < epsilon:
+            break
+
+    alpha_tree = purify.tree_from_vector(
+        vector_alpha, split_condition_vector, feature_tuple[0]
+    )
+    print(
+        "purify_one_feature alpha_tree_predict",
+        rt.alpha_tree_predict(alpha_tree, dataset),
+    )
+    print("purify_one_feature mean_offset", mean_offset)
+
+    return mean_offset, alpha_tree

@@ -7,6 +7,7 @@ import xgboost as xgb
 import json
 import os
 import pandas as pd
+import regression_test as rt
 
 # SET PARAM BASE IS AN INPUT
 # LOAD THROUGH JSON AND ACTUALLY CHANGE BASE_SCORE KEY
@@ -127,7 +128,13 @@ def get_model(
         return booster
 
 
-def update_metadata(model_file, base_score="0.0"):
+def update_metadata(
+    model_file,
+    base_score="0.0",
+    save_to_disk=True,
+    output_file_name="new_model.json",
+    folder="loaded_models",
+):
     """
     Updates model metadata based on the tree list in the model dictionary
     Args:
@@ -149,26 +156,27 @@ def update_metadata(model_file, base_score="0.0"):
     model_file["learner"]["gradient_booster"]["model"]["tree_info"] = [
         0 for _ in range(num_trees)
     ]
-    model_file["learner"]["learner_model_param"]["base_score"] = str(float(base_score))
-
     for i, tree in enumerate(trees):
         tree["id"] = i
 
-    # DO WE EVEN NEED THIS???? GOT RID OF WEIRD XGBOOST LIBRARY ERROR THO make sure float-type items are strictly floats MAKE SURE THIS IS OPTIMIZED --> KINDA SLOW?
+    # set base score
+    model_file["learner"]["learner_model_param"]["base_score"] = str(float(base_score))
+
+    # Convert required items to floats
     float_requirements = [
         "base_weights",
         "loss_changes",
         "split_conditions",
         "sum_hessian",
     ]
-
     for tree in model_file["learner"]["gradient_booster"]["model"]["trees"]:
         for key in float_requirements:
             tree[key] = [float(val) for val in tree[key]]
 
-    model = get_model(model_file, True, "SEETHIS.json")
-    model.set_param({"base_score": base_score})
-    return model
+    # Return updated model
+    updated_model = get_model(model_file, save_to_disk, output_file_name, folder)
+    updated_model.set_param({"base_score": base_score})
+    return updated_model
 
 
 def get_ordered_leaves(tree, node_index, leaf_indices=None, leaf_vals=None):
@@ -272,7 +280,7 @@ def get_data_col(dataset, column_index):
         dataset (DMatrix):
         column_indcx (int): column of DMatrix we want
     Returns:
-        numpy array (N,): column of DMatrix in a 1D numpy array vector format
+        numpy array (N,): column of DMatrix in a 1D numpy array vector format (to avoid that weird .any error)
     """
     data_col = dataset.get_data()[:, column_index]
     # Check for scipy sparse matrix
@@ -524,13 +532,13 @@ def five_node_tree(
     return new_tree
 
 
-def tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
+def tree_from_grid(grid, split_values_x, split_values_y, feature_tuple):
     """
     Args:
         grid: 2D numpy array (num_bins_x, num_bins_y) of values (e.g., alphas)
         split_values_x: list of thresholds for feature_x (length = num_bins_x - 1)
         split_values_y: list of thresholds for feature_y (length = num_bins_y - 1)
-        feature_indices: tuple of (feature_x_index, feature_y_index)
+        feature_tuple: tuple of (feature_x_index, feature_y_index)
 
     Returns: A dictionary matching one of the entries in the "trees" list in XGBoost internal format
     """
@@ -582,13 +590,12 @@ def tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
             else:
                 # Internal node: decide axis by larger dimension
                 if width >= height:
-                    split_axis = 0  # split x
                     mid = (x_lo + x_hi) // 2
                     split_value = split_values_x[mid - 1]
                     base_weights.append(0.0)
                     left_children.append(None)  # placeholder
                     right_children.append(None)  # placeholder
-                    split_indices.append(feature_indices[0])
+                    split_indices.append(feature_tuple[0])
                     split_conditions.append(float(split_value))
                     parents.append(parent)
                     default_left.append(0)
@@ -600,13 +607,12 @@ def tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
                     queue.append((x_lo, mid, y_lo, y_hi, cur_index))
                     queue.append((mid, x_hi, y_lo, y_hi, cur_index))
                 else:
-                    split_axis = 1  # split y
                     mid = (y_lo + y_hi) // 2
                     split_value = split_values_y[mid - 1]
                     base_weights.append(0.0)
                     left_children.append(None)
                     right_children.append(None)
-                    split_indices.append(feature_indices[1])
+                    split_indices.append(feature_tuple[1])
                     split_conditions.append(float(split_value))
                     parents.append(parent)
                     default_left.append(0)
@@ -650,7 +656,7 @@ def tree_from_grid(grid, split_values_x, split_values_y, feature_indices):
             "id": 0,
             "tree_param": {
                 "num_deleted": "0",
-                "num_feature": str(max(feature_indices) + 1),
+                "num_feature": str(max(feature_tuple) + 1),
                 "num_nodes": str(len(base_weights)),
                 "size_leaf_vector": "1",
             },
@@ -665,7 +671,6 @@ def tree_from_vector(vector, split_condition_vector, feature_index):
         feature_index (int):
     Returns:
         dict: XGBoost tree (level traversal)
-
     """
     # Initialize tree parameters
     base_weights = []
@@ -770,7 +775,6 @@ def split_tree(tree):
     """
     Args:
         tree (dictionary): 7-node, depth-2 tree in model_file
-
     Returns:
         list: tree_left, tree_right (each are dicts)
     """
@@ -835,10 +839,10 @@ def purify_two_features(
         feature_tuple (tuple):
         epsilon (float): if change is less than epsilon, END EARLY
         max_iter (int): max number of iterations
-
     Returns:
-        List: list of tree (dictionaries) that are 1-feature compensations for purification
-    Mutates "tree" such that its axes have a mean of 0 (purification)
+        Tuple:
+            Tuple[0]: tuple of 2 numpy 1D arrays (alpha vectors for x1, x2)
+            Tuple[1]: tree (dictionary) that represents the alpha grid
     """
     ##### BUILD GRIDS #####
 
@@ -888,8 +892,10 @@ def purify_two_features(
     vector_x = np.zeros(num_bins_x)
     vector_y = np.zeros(num_bins_y)
 
-    for _ in range(max_iter):
+    for i in range(max_iter):
         prev_grid_alphas = grid_alphas.copy()
+        # print("iteration", i)
+
         # integrate over x-axis
         current_prediction_vector = (
             grid_alphas[x_binned_indices, y_binned_indices] + predictions
@@ -913,9 +919,10 @@ def purify_two_features(
             grid_alphas[i, :] -= col_means[i]
         vector_x += col_means
 
-        # convergence check
+        # convergence check --> maybe do row_means and col_means < epsilon???
         diff = np.abs(grid_alphas - prev_grid_alphas).max()
         if diff < epsilon:
+            # print("END EARLY")
             break
 
     ##### CREATE TREE #####
@@ -953,53 +960,74 @@ def purify_one_feature(
     # get unique split values --> these divide up the axes
     split_condition_vector = split_conditions_dict[feature_tuple[0]]  # len = Bx - 1
 
-    # initialize vector_alphas to 0.0
+    # initialize vector_alphas
     num_bins = len(split_condition_vector) + 1  # Bx
     vector_alpha = alpha_vectors_dict[feature_tuple[0]]  # (Bx x 1)
 
     # get vector_predictions (prediction values from submodel)
-    data_col = dataset.get_data()[:, feature_tuple[0]]
+    data_col = get_data_col(dataset, feature_tuple[0])
     binned_indices = np.digitize(data_col, split_condition_vector)
-
     predictions = submodel.predict(dataset)
-    vector_prediction_vals = np.zeros(num_bins)
-    np.add.at(vector_prediction_vals, binned_indices, predictions)
 
+    # get mean prediction
+    current_vals = np.array(vector_alpha[binned_indices] + predictions)
     mean_offset = 0.0
+    mean_offset = current_vals.mean()
 
-    def get_bin_means(current_vals, binned_indices, num_bins):
-        sum_vector = np.zeros(num_bins)
-        count_vector = np.zeros(num_bins)
-        np.add.at(sum_vector, binned_indices, current_vals)
-        np.add.at(count_vector, binned_indices, 1)
-
-        mean_vector = np.zeros(num_bins)  # (Bx x 1)
-        nonzero = count_vector > 0
-        mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
-        return mean_vector
-
-    for _ in range(max_iter):
-        prev_vector_alpha = vector_alpha.copy()
-        current_vals = vector_alpha[binned_indices] + predictions
-        bin_means = get_bin_means(current_vals, binned_indices, num_bins)
-
-        vector_alpha -= bin_means
-        mean_offset += bin_means.mean()  #### a little unsure about this
-
-        if np.abs(vector_alpha - prev_vector_alpha).max() < epsilon:
-            break
-
+    # construct alpha tree
+    vector_alpha -= mean_offset
     alpha_tree = tree_from_vector(
         vector_alpha, split_condition_vector, feature_tuple[0]
     )
 
+    # return
     return mean_offset, alpha_tree
+
+    # trial one (mimics 2D)
+    if False:
+
+        def get_bin_means(current_vals, binned_indices, num_bins):
+            sum_vector = np.zeros(num_bins)
+            count_vector = np.zeros(num_bins)
+            np.add.at(sum_vector, binned_indices, current_vals)
+            np.add.at(count_vector, binned_indices, 1)
+
+            mean_vector = np.zeros(num_bins)  # (Bx x 1)
+            nonzero = count_vector > 0
+            mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
+            print("MEAN VECTOR", mean_vector)
+            return mean_vector
+
+        for i in range(max_iter):
+            print("purify_one_feature iteration", i)
+            prev_vector_alpha = vector_alpha.copy()
+            current_vals = vector_alpha[binned_indices] + predictions
+            bin_means = get_bin_means(current_vals, binned_indices, num_bins)
+
+            vector_alpha -= bin_means
+            mean_offset += bin_means.mean()  #### a little unsure about this
+
+            # convergence check
+            if np.abs(vector_alpha - prev_vector_alpha).max() < epsilon:
+                break
+
+        alpha_tree = tree_from_vector(
+            vector_alpha, split_condition_vector, feature_tuple[0]
+        )
+        print(
+            "purify_one_feature alpha_tree_predict",
+            rt.alpha_tree_predict(alpha_tree, dataset),
+        )
+        print("purify_one_feature mean_offset", mean_offset)
+
+        return mean_offset, alpha_tree
 
 
 def purify_2D(
     model,
     dataset,
     save_to_disk=True,
+    input_file_name="original_model.json",
     output_file_name="new_model.json",
     output_folder="loaded_models",
 ):
@@ -1033,8 +1061,10 @@ def purify_2D(
         tree_indices_interaction |= get_filtered_tree_indices(model, feature_tuple)
 
     ##### SEPARATE TREES INTO BIAS, 1-FEATURE, 2-FEATURE INTERACTION #####
-    model_file = get_model_file(model, True, "original_model.json", "loaded_models")
-    original_base_score = model_file["learner"]["learner_model_param"]["base_score"]
+    model_file = get_model_file(model, True, input_file_name, output_folder)
+    original_base_score = float(
+        model_file["learner"]["learner_model_param"]["base_score"]
+    )
 
     tree_list_all = model_file["learner"]["gradient_booster"]["model"]["trees"]
     bias_tree_vals = []
@@ -1066,7 +1096,7 @@ def purify_2D(
     model_file["learner"]["gradient_booster"]["model"]["trees"] = (
         tree_list_one_feature + tree_list_two_features
     )
-    updated_model = update_metadata(model_file, "0.0")
+    updated_model = update_metadata(model_file, "0.0", False)
     alpha_tree_list = []
 
     # get bins for each feature
@@ -1075,7 +1105,7 @@ def purify_2D(
     )
 
     alpha_vectors_dict = {
-        feature_index: np.zeros(len(split_conditions_dict[feature_index]))
+        feature_index: np.zeros(len(split_conditions_dict[feature_index]) + 1)
         for feature_index in feature_list
     }
 
@@ -1086,7 +1116,7 @@ def purify_2D(
             submodel, dataset, split_conditions_dict, feature_tuple
         )
 
-        # POSSIBLE ERROR: check if feature_tuple corresopnds to correct alpha vector
+        # POSSIBLE ERROR: check if feature_tuple corresponds to correct alpha vector
         alpha_tree_list.append(alpha_tree_two)
         for feature, alpha_vector in zip(feature_tuple, alpha_vectors):
             alpha_vectors_dict[feature] += alpha_vector
@@ -1111,7 +1141,13 @@ def purify_2D(
     )
 
     ##### UPDATE MODEL METADATA #####
-    new_model = update_metadata(model_file, str(float(new_base_score)))
+    new_model = update_metadata(
+        model_file,
+        str(float(new_base_score)),
+        save_to_disk,
+        output_file_name,
+        output_folder,
+    )
 
     ##### SAVE AND RETURN #####
     return new_model
@@ -1127,14 +1163,20 @@ def fANOVA_2D(
 ):
     """
     Args:
+        use_cached (bool): True if purifed submodels already exist
         model (Booster): model from model_file (max_depth = 2)
-        dataset (DMatrix)
+        dataset (DMatrix):
+        save_to_disk (bool):
+        prefix (str): tag for the names of all submodels
+        output_folder (str):
     Returns:
-        purified_model (Booster)
-        dictionary:
-            key (tuple): (0,), (1,), (0, 1), (0, 2), etc.
-            value (Booster): model
-        bias (float)
+        fANOVA Result Object:
+            original_model
+            purified_model
+            components (dict):
+                key: feature_tuple
+                val: Booster object
+            bias (float)
     """
 
     def load_cached_fANOVA_models(prefix, output_folder="loaded_models"):
@@ -1142,9 +1184,9 @@ def fANOVA_2D(
         Loads the original model, purified model, component models, and bias from disk.
 
         Assumes files are named:
-        - <prefix>_original_model.json       ← original model
-        - <prefix>_purified_model.json       ← purified model
-        - <prefix>_component_(i,).json       ← component models
+        - <prefix>_original_model.json       <- original model
+        - <prefix>_purified_model.json       <-  purified model
+        - <prefix>_component_(i,).json       <- component models
 
         Args:
             file_path_prefix (str): prefix used to save the models
@@ -1196,17 +1238,14 @@ def fANOVA_2D(
         num_features = dataset.num_col()
         feature_indices = list(range(num_features))
 
-        # Save model to file with new name
-        original_model_file = get_model_file(
-            model, save_to_disk, f"{prefix}_original_model.json"
-        )
-        original_model = get_model(
-            original_model_file, save_to_disk, f"{prefix}_original_model.json"
-        )
-
         # Purify Model
         purified_model = purify_2D(
-            model, dataset, save_to_disk, f"{prefix}_purified_model.json", output_folder
+            model,
+            dataset,
+            save_to_disk,
+            f"{prefix}_original_model.json",
+            f"{prefix}_purified_model.json",
+            output_folder,
         )
         purified_model_file = get_model_file(
             purified_model,
@@ -1235,8 +1274,6 @@ def fANOVA_2D(
         for subset, submodel in zip(all_nonempty_subsets, filtered_model_list):
             # Reset bias to 0 (don't want to overcount)
             submodel.set_param({"base_score": 0.0})
-
-            # # new stuff
             submodel_file = get_model_file(
                 submodel, save_to_disk, prefix + "_component_" + str(subset)
             )
@@ -1244,82 +1281,14 @@ def fANOVA_2D(
             submodel = get_model(
                 submodel_file, save_to_disk, prefix + "_component_" + str(subset)
             )
-            # # end new stuff
 
             submodel_dict[subset] = submodel
 
         return fANOVA_Result(original_model, purified_model, submodel_dict, bias)
 
 
-####### TEST HELPERS #######
-def purity_check(dataset, function, dimension, epsilon=0.1):
-    x1 = dataset[:, 0]
-    x2 = dataset[:, 1]
-    return
-
-
-# arbitrary function
-# dataset
-# integrate x1, bin by x2 by epsilon
-# each strip should average to 0
-
-
-def compute_binned_means(samples, func, dimension="x2", epsilon=0.1):
-    """
-    Bin the samples by the chosen dimension and compute the mean of the function over each bin.
-
-    Parameters:
-    samples (np.ndarray): Array of shape (N, 2) containing the samples
-    func (callable): Function that takes x1 and x2 as inputs
-    dimension (str): Dimension to bin by ('x1' or 'x2', default: 'x2')
-    epsilon (float): Width of the bins (default: 0.1)
-
-    Returns:
-    tuple: (bin_centers, bin_means), where
-        bin_centers (np.ndarray): Centers of the bins
-        bin_means (np.ndarray): Means of the function over each bin
-    """
-    x1 = samples[:, 0]
-    x2 = samples[:, 1]
-
-    # Choose the dimension to bin by
-    if dimension == "x1":
-        values = x1
-    elif dimension == "x2":
-        values = x2
-    else:
-        raise ValueError("dimension must be 'x1' or 'x2'")
-
-    # Compute the function values
-    function_values = func(x1, x2)
-
-    # Create bins (more efficient implementation)
-    min_val, max_val = np.min(values), np.max(values)
-    n_bins = int(np.ceil((max_val - min_val) / epsilon))
-    bins = np.linspace(min_val, max_val, n_bins + 1)
-    bin_indices = np.digitize(values, bins) - 1
-
-    # Compute mean of function values in each bin (vectorized)
-    bin_means = np.zeros(n_bins + 1)
-    bin_counts = np.zeros(n_bins + 1)
-
-    np.add.at(bin_means, bin_indices, function_values)
-    np.add.at(bin_counts, bin_indices, 1)
-
-    # Avoid division by zero for empty bins
-    mask = bin_counts > 0
-    bin_means[mask] /= bin_counts[mask]
-    bin_means[~mask] = np.nan  # Mark empty bins as NaN
-
-    return bins, bin_counts, bin_means
-
-
 if __name__ == "__main__":
-    ##### GENERATE TEST DATA #####
-    tree_from_vector(
-        None, np.array([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]), None
-    )
-
+    # erm
     if False:
         n = 1 << 16
         rho_val = 0  # 0, .5, .9, .999, 1
@@ -1382,245 +1351,3 @@ if __name__ == "__main__":
         print("BREAK!!")
         for model in my_f.purified_model_dict.values():
             print(model.predict(dtrain))
-
-    # config = json.loads(model.save_config())
-    # # Add your constant to the base_score
-    # config["learner"]["learner_model_param"]["base_score"] = str(
-    #     float(config["learner"]["learner_model_param"]["base_score"]) + 10
-    # )
-    # # Save modified config back
-    # model.load_config(json.dumps(config))
-
-    # original_model_file = get_model_file(model, True, "original_model.json")
-
-    # model_2 = get_model(original_model_file)
-
-    # print(f"original model prediction: {model.predict(dtrain)[:5]}")
-
-    # model_copy_file = get_model_file(model, True, "copy.json")
-    # model_copy_file["learner"]["learner_model_param"]["base_score"] = "999.0"
-    # # model.set_param({"base_score": "9999"})
-    # model_copy = get_model(model_copy_file, True, "copy.json")
-    # print(f"new prediction: {model_copy.predict(dtrain)[:5]}")
-
-    # original_bias = original_model_file["learner"]["learner_model_param"][
-    #     "base_score"
-    # ]
-
-    # model.save_model("loaded_models/original_model.json")
-
-    # print(model.predict(dtrain)[:5])
-    # model.save_model("loaded_models/test_one.json")
-    # # model_file = get_model_file(model, True)
-    # OG_MODEL = load_model_from_memory("loaded_models/original_model.json")
-    # test_model = load_model_from_memory("loaded_models/test_one.json")
-    # print(OG_MODEL.predict(dtrain)[:5])
-
-    #### START
-    # original_model = xgb.Booster()
-    # original_model.load_model("loaded_models/original_model.json")
-    # original_model = load_model_from_memory("loaded_models/original_model.json")
-    # model_copy = load_model_from_memory("loaded_models/original_model_copy.json")
-    # model_10 = load_model_from_memory("loaded_models/original_model_copy10.json")
-
-    # def compare_two_models(model_1, model_2, dtrain, shift=0.0):
-    #     predict_1 = model_1.predict(dtrain)
-    #     predict_2 = model_2.predict(dtrain) + shift
-    #     print(f"predict_1: {predict_1}")
-    #     print(f"predict_2: {predict_2}")
-    #     print(f"diff: {predict_1[:5] - predict_2[:5]}")
-    #     print(np.allclose(predict_1, predict_2, atol=1e-9, rtol=0.0))
-
-    # compare_two_models(model, original_model, dtrain)
-    # compare_two_models(model, model_10, dtrain, -10)
-
-    # load_model_from_memory("loaded_models/original_model.json")
-    # print(original_model.predict(dtrain)[:5])
-    # copy = load_model_from_memory("loaded_models/original_model_copy.json")
-
-    # bias = float("1.0010112E1")
-    # model_copy.set_param({"base_score": 0.0})
-
-    # model_copy_file = get_model_file(model_copy, True, "copy.json")
-    # model_copy = get_model(model_copy_file, True, "copy.json")
-    # bias = float("9.990817E0")
-    # original_prediction = original_model.predict(dtrain)
-    # copy_prediction = model_copy.predict(dtrain)
-    # bias = original_prediction[0] - copy_prediction[0]
-
-    # # bias = float(original_model.attr("base_score"))
-    # print(
-    #     (original_model.predict(dtrain)[:10] - bias) - model_copy.predict(dtrain)[:10]
-    # )
-    # # print(float("1.0007808E1"))
-
-    # assert np.allclose(
-    #     (original_model.predict(dtrain) - bias),
-    #     model_copy.predict(dtrain),
-    #     atol=1e-9,
-    #     rtol=0.0,
-    # )
-
-    # diff = original_model.predict(dtrain) - model.copy
-
-    ##### END #####
-
-    # original_model_file["learner"]["learner_model_param"]["base_score"] = "0.0"
-    # model.set_param({"base_score": 0.0})
-
-    # # BASE SCORE TEST
-    # model_file = get_model_file(model, True, "original_model.json")
-    # model = get_model(model_file, True, "original_model.json")
-    # print(f"original_model_prediction: {model.predict(dtrain)[:5]}")
-
-    # model.set_param({"base_score": 0.0})
-    # model_file_weird = get_model_file(model, True, "model_base_score_zero.json")
-    # model_diff_base_score = get_model(model_file_weird)
-    # print(
-    #     f"model base score zero prediction: {model_diff_base_score.predict(dtrain)[:5]}"
-    # )
-
-    # model.set_param({"base_score": 0.0})
-
-    # # Original Prediction
-    # original_model_prediction = np.zeros(dtrain.num_row())
-    # original_model_prediction += model.predict(dtrain)
-    # print(f"original model prediction: {original_model_prediction[:5]}")
-    # # print(type(original_model_prediction))
-
-    # # Prediction after save and load
-    # model_file = get_model_file(model)
-    # model_loaded = get_model(model_file)
-    # model_loaded_prediction = np.zeros(dtrain.num_row())
-    # model_loaded_prediction += model_loaded.predict(dtrain)
-    # print(f"loaded model prediction: {model_loaded_prediction[:5]}")
-
-    # # Prediction after filtering
-    # num_samples, num_features = dtrain.num_row(), dtrain.num_col()
-    # feature_indices = list(range(num_features))
-    # all_nonempty_subsets = all_combinations(feature_indices) + [()]
-    # filtered_model_list = get_filtered_model_list(
-    #     model,
-    #     all_nonempty_subsets,
-    #     True,
-    #     [str(tup) for tup in all_nonempty_subsets],
-    # )
-    # model_dict = {}
-    # bias = float(model_file["learner"]["learner_model_param"]["base_score"])
-
-    # for subset, submodel in zip(all_nonempty_subsets, filtered_model_list):
-    #     # Reset bias to 0 (don't want to overcount)
-    #     submodel.set_param({"base_score": 0.0})
-    #     submodel_dict = get_model_file(submodel)
-    #     submodel = get_model(submodel_dict)
-    #     # submodel_dict["learner"]["learner_model_param"]["base_score"] = "0.0"
-    #     model_dict[subset] = submodel
-
-    # model_subsets_prediction = np.zeros(num_samples)
-    # for name, submodel in model_dict.items():
-    #     # print(f"{name}: {submodel.predict(dtrain)[:5]}")
-    #     model_subsets_prediction += submodel.predict(dtrain)
-    # model_subsets_prediction += bias
-    # print(f"summed submodels prediction: {model_subsets_prediction[:5]}")
-    # print(f"SUMMED DIFF: {model_loaded_prediction[:5] - model_subsets_prediction[:5]}")
-
-    # # Iteration Range Prediction
-    # summed_iteration_prediction = np.zeros(num_samples)
-    # for i in range(5):
-    #     summed_iteration_prediction += model.predict(dtrain, iteration_range=(i, i + 1))
-    #     summed_iteration_prediction -= bias
-    # summed_iteration_prediction += bias
-    # print(f"summed_iteration_prediction: {summed_iteration_prediction[:5]}")
-    # print(
-    #     f"ITERATION DIFF: {model_loaded_prediction[:5] - summed_iteration_prediction[:5]}"
-    # )
-
-    # # Single Test Point Traversal Inspection
-    # dtrain = dtrain.get_data()
-    # if hasattr(dtrain, "toarray"):
-    #     X_train = dtrain.toarray()
-    # print(X_train[0, :])
-    # print(dtrain[0, :])
-
-    ###### END ######
-
-    # # Original Model Prediction
-    # original_model_prediction = np.zeros(num_samples)
-    # original_model_prediction += model.predict(dtrain)
-    # print(f"original model prediction: {original_model_prediction[:5]}")
-
-    # dtrain = xgb.DMatrix("loaded_models/dtrain.buffer")
-    # # cached_model = load_model_from_memory("loaded_models/original_model.json")
-    # # print(f"cached_model_prediction:{cached_model.predict(dtrain)[:5]}")
-
-    # # Purified Model Prediction
-    # purified_model, purified_model_dict, bias = fANOVA_2D(model, dtrain)
-    # purified_model_prediction = np.zeros(num_samples)
-    # purified_model_prediction += purified_model.predict(dtrain)
-    # print(f"purified model prediction: {purified_model_prediction[:5]}")
-    # # Prediction from summing submodels
-    # submodel_sum_prediction = np.zeros(num_samples)
-    # for submodel in purified_model_dict.values():
-    #     submodel_sum_prediction += submodel.predict(dtrain)
-    # submodel_sum_prediction += bias
-    # print(f"submodel sum prediction: {submodel_sum_prediction[:10]}")
-
-    # print(
-    #     f"original, purified diff = {original_model_prediction[:10] - purified_model_prediction[:10]}"
-    # )
-    # print(
-    #     f"purified, submodel sum diff = {purified_model_prediction[:10] - submodel_sum_prediction[:10]}"
-    # )
-
-    # print(
-    #     f"submodel sum, original diff = {submodel_sum_prediction[:10] - original_model_prediction[:10]}"
-    # )
-
-    ###############
-    ##### END #####
-    ###############
-
-    # np.random.seed(42)
-    # x1 = np.random.uniform(0, 100, 10)
-    # x2 = np.random.uniform(0, 100, 10)
-    # x3 = np.random.uniform(0, 100, 10)
-    # y = 10 * x1 + 2 * x2 + 3 * x1 * x2 + 5 + 4 * x3
-
-    # X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
-    # X_train, X_test, y_train, y_test = train_test_split(
-    #     X, y, test_size=0.3, random_state=42
-    # )
-
-    # # Convert to DMatrix format required by xgb.train
-    # dtrain = xgb.DMatrix(X_train, label=y_train)
-    # dtest = xgb.DMatrix(X_test, label=y_test)
-
-    # # Parameters (note different parameter names)
-    # params = {
-    #     "max_depth": 2,
-    #     "learning_rate": 1.0,
-    #     "objective": "reg:squarederror",
-    #     "random_state": 42,
-    # }
-
-    # # Training with monitoring
-    # model = xgb.train(
-    #     params=params,
-    #     dtrain=dtrain,
-    #     num_boost_round=1000,  # Equivalent to n_estimators
-    #     evals=[(dtrain, "train"), (dtest, "test")],
-    #     verbose_eval=True,
-    # )
-
-    # filtered_model = get_filtered_model(model, (0, 1), "filtered_model.json")
-    # print(f"original_prediction (0, 1): {filtered_model.predict(dtest)}")
-    # purified_new_model = purify_2D(filtered_model, dtrain)
-    # print(f"purified_prediction: {purified_new_model.predict(dtest)}")
-
-    # model_file = get_model_file(model, "original_model.json")
-    # print(f"original_prediction: {model.predict(dtest)}")
-    # purified_model = purify_2D(model, dtrain)
-    # print(f"purified_prediction: {purified_model.predict(dtest)}")
-
-    # _, model_dict, bias = fANOVA_2D(model, dtrain)
-    # model_x1 = model_dict[(0, 1)]
