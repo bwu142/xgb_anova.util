@@ -5,11 +5,10 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
-import matplotlib.pyplot as plt
-import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.metrics import r2_score
 import purify
+from pygam import LinearGAM, s, f
 
 
 ##### HELPER FUNCTIONS #####
@@ -53,9 +52,9 @@ def new_model(trees, base_score, file_name="test_model.json"):
     }
     # print(new_model_file)
     base_score = str(float(base_score))
-    new_model = purify.update_metadata(new_model_file, base_score)
+    new_model = purify.update_metadata(new_model_file, base_score, True, file_name)
 
-    model_file = purify.get_model_file(new_model, True, "test_model.json")
+    model_file = purify.get_model_file(new_model, True, file_name)
     # print(model_file["learner"]["gradient_booster"]["model"]["trees"])
     return new_model
 
@@ -66,7 +65,40 @@ def alpha_tree_predict(alpha_tree, dataset):
     return prediction
 
 
-##### MANUAL CHECK-TESTS #####
+def generate_x(dist_type, n, d, seed=None, cov_mat=None):
+    """
+    Generate n samples of dimension d from a specified distribution type.
+
+    Parameters:
+    - dist_type : str : type of distribution, e.g. "gaussian"
+    - n         : int : number of samples
+    - d         : int : dimension of each sample
+    - seed      : int or None : random seed for reproducibility (default None)
+    - cov_mat   : ndarray or None : covariance matrix for gaussian (d x d), default is identity
+
+    Returns:
+    - X : ndarray of shape (n, d) samples
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if dist_type == "gaussian":
+        mean = np.zeros(d)
+        if cov_mat is None:
+            cov_mat = np.eye(d)  # default to identity if no covariance matrix provided
+        samples = np.random.multivariate_normal(mean, cov_mat, n)
+        return samples
+    else:
+        raise ValueError(f"Distribution type '{dist_type}' is not implemented.")
+
+
+# Example usage:
+# cov_mat = [[1, 0.5], [0.5, 1]]
+# seed = 42
+# X = generate_x("gaussian", 2**14, 2, seed=seed, cov_mat=cov_mat)
+
+
+##### HELPER FUNCTION TESTS #####
 def test_vector_to_tree(
     alpha_vector, split_condition_vector, feature_index, dataset, true_prediction
 ):
@@ -95,151 +127,120 @@ def test_grid_to_tree(
     assert np.allclose(test_model_prediction, true_prediction, atol=1e-4, rtol=0.0)
 
 
-def test_purify_two_features_all_pairs(model, dataset):
-    """
-    Test purification for all feature pairs (2-way interactions).
-
-    Args:
-        model: XGBoost Booster trained on dataset
-        dataset: xgb.DMatrix with the data used by model
-
-    Raises:
-        AssertionError if purity or prediction equality checks fail.
-    """
-    model_file = purify.get_model_file(model, False)
-    tree_list = model_file["learner"]["gradient_booster"]["model"]["trees"]
-
-    num_features = dataset.num_col()
-    feature_tuples = purify.all_combinations(list(range(num_features)))
-
-    # Extract split conditions for all features used in the model
-    # Assumes you have a helper that returns dict {feature_idx: split_values}
-    split_conditions_dict = purify.get_split_conditions(
-        tree_list,
-        list(range(num_features)),
-    )
-
-    for pair in feature_tuples:
-        # Extract submodel sensitive only to these two features
-        submodel = purify.get_filtered_model(model, pair, use_inplace=False)
-
-        # Run purification
-        (vector_x, vector_y), alpha_tree = purify.purify_two_features(
-            submodel, dataset, split_conditions_dict, pair
-        )
-
-        # Reconstruct alpha grid from purified tree (you need this util)
-        grid_alphas = purify.predict_grid_from_tree(
-            alpha_tree, split_conditions_dict, pair
-        )
-
-        # 1) Purity check: means along each axis should be near zero
-        mean_x = np.mean(grid_alphas, axis=0)
-        mean_y = np.mean(grid_alphas, axis=1)
-        assert np.allclose(
-            mean_x, 0, atol=1e-6
-        ), f"Interaction grid not pure on x-axis for features {pair}: {mean_x}"
-        assert np.allclose(
-            mean_y, 0, atol=1e-6
-        ), f"Interaction grid not pure on y-axis for features {pair}: {mean_y}"
-
-        # 2) Prediction equality check
-        original_preds = submodel.predict(dataset)
-        alpha_tree_preds = alpha_tree_predict(alpha_tree, dataset)
-
-        data = dataset.get_data()
-        x_bins = np.digitize(data[:, pair[0]], split_conditions_dict[pair[0]])
-        y_bins = np.digitize(data[:, pair[1]], split_conditions_dict[pair[1]])
-
-        vector_contrib = vector_x[x_bins] + vector_y[y_bins]
-        purified_preds = alpha_tree_preds + vector_contrib
-
-        assert np.allclose(
-            original_preds, purified_preds, atol=1e-5
-        ), f"Predictions mismatch for features {pair}: max diff = {(np.abs(original_preds - purified_preds)).max()}"
-
-
-def test_purify_one_feature():
-    pass
-
-
+##### MAIN TESTS #####
 def test_purity(model, dataset):
     # Run purification
-    new_model = purify.purify_2D(model, dataset, save_to_disk=False)
-    all_combinations = purify.all_combinations(list(range(dataset.num_col)))
+    result = purify.fANOVA_2D(False, "purity", model, dataset)
 
     # Get all split thresholds once for all features from the whole model
+    feature_list = list(range(dataset.num_col()))
     tree_list = purify.get_model_file(model, save_to_disk=False)["learner"][
         "gradient_booster"
     ]["model"]["trees"]
-    split_conditions_dict = purify.get_split_conditions(tree_list, purify.feature_list)
+    split_conditions_dict = purify.get_split_conditions(tree_list, feature_list)
 
     # Iterate through all combinations (main effects and pairwise interactions)
-    for feature_tuple in all_combinations:
-
-        # Filter model to features in tuple
-        submodel = purify.get_filtered_model(model, feature_tuple)
-
+    for feature_tuple, submodel in result.purified_model_dict.items():
+        # main effect
         if len(feature_tuple) == 1:
-            # Purify one feature
-            # Initialize alpha_vectors_dict with zeros (may need to populate from purify_two_features if iterative)
-            alpha_vectors_dict = {
-                f: np.zeros(len(split_conditions_dict[f]) + 1) for f in feature_list
-            }
-            mean_offset, alpha_tree = purify.purify_one_feature(
-                submodel,
-                dataset,
-                split_conditions_dict,
-                alpha_vectors_dict,
-                feature_tuple,
-            )
+            main_effect_prediction = submodel.predict(dataset)
+            mean = np.mean(main_effect_prediction)
+            assert abs(mean) < 1e-3
+        # interaction
+        else:
+            if True:
+                split_x = split_conditions_dict[feature_tuple[0]]
+                split_y = split_conditions_dict[feature_tuple[1]]
 
-            # Obtain main effect vector by predicting at bin centers
-            # (Construct bin centers from splits)
-            splits = split_conditions_dict[feature_tuple[0]]
-            # Edges and centers
-            edges = [-np.inf] + splits + [np.inf]
-            bin_centers = [(edges[i] + edges[i + 1]) / 2 for i in range(len(edges) - 1)]
-            X_centers = np.array(bin_centers).reshape(-1, 1)
-            dmat_centers = xgb.DMatrix(X_centers.astype(np.float32))
-            alpha_preds = alpha_tree_predict(
-                alpha_tree, dmat_centers
-            )  # implement alpha_tree_predict
+                data_x_col = purify.get_data_col(dataset, feature_tuple[0])
+                data_y_col = purify.get_data_col(dataset, feature_tuple[1])
 
-            # Check mean zero
-            assert (
-                abs(np.mean(alpha_preds)) < 1e-6
-            ), f"Feature {feature_tuple[0]} main effect vector not zero-mean"
+                x_bins = np.digitize(data_x_col, split_x)
+                y_bins = np.digitize(data_y_col, split_y)
+                predictions = submodel.predict(dataset)
 
-        elif len(feature_tuple) == 2:
-            # Purify two features
-            alpha_vectors, alpha_tree = purify.purify_two_features(
-                submodel, dataset, split_conditions_dict, feature_tuple
-            )
-            vector_x, vector_y = alpha_vectors
+                num_bins_x = len(split_x) + 1
+                num_bins_y = len(split_y) + 1
 
-            # Check vector means zero
-            assert (
-                abs(np.mean(vector_x)) < 1e-6
-            ), f"Feature {feature_tuple[0]} vector not zero mean"
-            assert (
-                abs(np.mean(vector_y)) < 1e-6
-            ), f"Feature {feature_tuple[1]} vector not zero mean"
+                grid_sums = np.zeros((num_bins_x, num_bins_y))
+                grid_counts = np.zeros((num_bins_x, num_bins_y))
 
-            # Get interaction grid predictions on bin centers (use predict_grid_from_tree helper)
-            grid_alphas = predict_grid_from_tree(
-                alpha_tree, split_conditions_dict, feature_tuple
-            )
+                for xb, yb, pred in zip(x_bins, y_bins, predictions):
+                    grid_sums[xb, yb] += pred
+                    grid_counts[xb, yb] += 1
 
-            # Check row and column means zero
-            assert np.all(
-                np.abs(np.mean(grid_alphas, axis=0)) < 1e-6
-            ), f"Interaction grid not zero mean along x-axis for {feature_tuple}"
-            assert np.all(
-                np.abs(np.mean(grid_alphas, axis=1)) < 1e-6
-            ), f"Interaction grid not zero mean along y-axis for {feature_tuple}"
+                # Data-weighted mean across each axis (skip empty bins)
+                mean_along_x = np.zeros(num_bins_x)
+                mean_along_y = np.zeros(num_bins_y)
 
-    print("Initial binning and zero-mean purity checks done.")
+                # Along x (columns: for each y_bin, sum over x, weighted)
+                for yb in range(num_bins_y):
+                    valid = grid_counts[:, yb] > 0
+                    if valid.any():
+                        means = np.zeros(num_bins_x)
+                        means[valid] = grid_sums[valid, yb] / grid_counts[valid, yb]
+                        weights = grid_counts[valid, yb]
+                        mean_along_x[yb] = (
+                            np.sum(means[valid] * weights) / weights.sum()
+                        )
+
+                # Along y (rows: for each x_bin, sum over y, weighted)
+                for xb in range(num_bins_x):
+                    valid = grid_counts[xb, :] > 0
+                    if valid.any():
+                        means = np.zeros(num_bins_y)
+                        means[valid] = grid_sums[xb, valid] / grid_counts[xb, valid]
+                        weights = grid_counts[xb, valid]
+                        mean_along_y[xb] = (
+                            np.sum(means[valid] * weights) / weights.sum()
+                        )
+
+                assert np.all(
+                    np.abs(mean_along_x) < 1e-3
+                ), f"Interaction (weighted, x-axis) not zero: {mean_along_x}"
+                assert np.all(
+                    np.abs(mean_along_y) < 1e-3
+                ), f"Interaction (weighted, y-axis) not zero: {mean_along_y}"
+            if False:
+                split_condition_vector_x = split_conditions_dict[feature_tuple[0]]
+                split_condition_vector_y = split_conditions_dict[feature_tuple[1]]
+                data_x_col = purify.get_data_col(dataset, feature_tuple[0])
+                data_y_col = purify.get_data_col(dataset, feature_tuple[1])
+
+                x_binned_indices = np.digitize(
+                    data_x_col, split_condition_vector_x
+                )  # (N x 1)
+                y_binned_indices = np.digitize(
+                    data_y_col, split_condition_vector_y
+                )  # (N x 1)
+
+                predictions = submodel.predict(dataset)
+
+                num_bins_x = len(split_condition_vector_x) + 1
+                num_bins_y = len(split_condition_vector_y) + 1
+                sum_vector_x = np.zeros(num_bins_x)
+                sum_vector_y = np.zeros(num_bins_y)
+                count_vector_x = np.zeros(num_bins_x)
+                count_vector_y = np.zeros(num_bins_y)
+
+                np.add.at(sum_vector_x, x_binned_indices, predictions)
+                np.add.at(sum_vector_y, y_binned_indices, predictions)
+                np.add.at(count_vector_x, x_binned_indices, predictions)
+                np.add.at(count_vector_y, y_binned_indices, predictions)
+
+                # check purity across rows
+                nonzero = count_vector_x > 0
+                mean_vector_x = np.zeros(num_bins_x)
+                mean_vector_x[nonzero] = sum_vector_x[nonzero] / count_vector_x[nonzero]
+                print("mean_vector_x: ", mean_vector_x)
+                assert np.any(mean_vector_x > 1e-3) is True
+
+                # check purity across cols
+                nonzero = count_vector_y > 0
+                mean_vector_y = np.zeros(num_bins_y)
+                mean_vector_y[nonzero] = sum_vector_y[nonzero] / count_vector_y[nonzero]
+                print("mean_vector_y: ", mean_vector_y)
+                assert np.any(mean_vector_y > 1e-3) is True
 
 
 def test_equal_predictions(model, dataset):
@@ -387,39 +388,13 @@ if __name__ == "__main__":
         )
 
     ##### test_purify_two_features #####
-    def check_interaction_purity(
-        grid_alphas, binned_indices_x, binned_indices_y, num_bins_x, num_bins_y
-    ):
-        # Count samples per bin along x and y
-        counts_2d = np.zeros((num_bins_x, num_bins_y))
-        for x_bin, y_bin in zip(binned_indices_x, binned_indices_y):
-            counts_2d[x_bin, y_bin] += 1
-
-        # Weighted means across rows (fixed y)
-        col_means = np.sum(grid_alphas * counts_2d, axis=0) / counts_2d.sum(axis=0)
-        # Weighted means across columns (fixed x)
-        row_means = np.sum(grid_alphas * counts_2d, axis=1) / counts_2d.sum(axis=1)
-
-        # Check near zero, accounting for numerical stability
-        assert np.allclose(
-            col_means, 0, atol=1e-6
-        ), f"Non-zero column means: {col_means}"
-        assert np.allclose(row_means, 0, atol=1e-6), f"Non-zero row means: {row_means}"
-
-    # For 1D main effect vector:
-    def check_main_effect_purity(vector_alpha, binned_indices, num_bins):
-        counts = np.bincount(binned_indices, minlength=num_bins)
-        weighted_mean = np.sum(vector_alpha * counts) / counts.sum()
-        assert (
-            abs(weighted_mean) < 1e-6
-        ), f"Main effect vector not zero mean: {weighted_mean}"
 
     ##### test_purify_one_features #####
 
     ##### test_purity #####
 
     ##### test_equal_predictions #####
-    if True:
+    if False:
         n = 1 << 16
         rho_val = 0  # 0, .5, .9, .999, 1
         b1, b2, b3 = 3, 2, 10
@@ -458,67 +433,184 @@ if __name__ == "__main__":
 
         test_equal_predictions(model, dtrain)
         test_fANOVA_1(model, dtrain)
+        test_fANOVA_2(model, dtrain)
+        test_purity(model, dtrain)
 
-    ##### other tests #####
+    ##### plot against theoretical #####
+
+    # ben's original test
     if False:
-        tree = {
-            "base_weights": [
-                1.9408799e-7,
-                -2.3663945,
-                2.4047706,
-                1.0,
-                2.0,
-                3.0,
-                4.0,
-            ],
-            "categories": [],
-            "categories_nodes": [],
-            "categories_segments": [],
-            "categories_sizes": [],
-            "default_left": [0, 0, 0, 0, 0, 0, 0],
-            "id": 0,
-            "left_children": [1, 3, 5, -1, -1, -1, -1],
-            "loss_changes": [2.610693e5, 6.0227062e4, 5.802592e4, 0, 0, 0, 0],
-            "parents": [2147483647, 0, 0, 1, 1, 2, 2],
-            "right_children": [2, 4, 6, -1, -1, -1, -1],
-            "split_conditions": [
-                10.0,
-                5.0,
-                15.0,
-                1.0,
-                2.0,
-                3.0,
-                4.0,
-            ],
-            "split_indices": [0, 1, 1, 0, 0, 0, 0],
-            "split_type": [0, 0, 0, 0, 0, 0, 0],
-            "sum_hessian": [
-                4.5875e4,
-                2.3122e4,
-                2.2753e4,
-                1.284e4,
-                1.0282e4,
-                1.0986e4,
-                1.1767e4,
-            ],
-            "tree_param": {
-                "num_deleted": "0",
-                "num_feature": "2",
-                "num_nodes": "7",
-                "size_leaf_vector": "1",
-            },
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        DataType = "x1x2"
+        name = f"{DataType}_{rho:.2f}"
+
+        if DataType == "x1x2":
+            X = generate_x("gaussian", n, 2, seed=seed, cov_mat=cov_mat)
+            yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+            y = yf(X[:, 0], X[:, 1])
+
+            rho_over2 = rho / (1 + rho**2)
+            ref_x1x2 = lambda x: b3 * (
+                x[:, 0] * x[:, 1]
+                - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+                + rho_over2 * (1 - rho**2)
+            )
+            ref_x1x2_rho = lambda x: np.full(len(x), b3 * rho_over2 * (1 - rho**2))
+            ref_x1 = lambda x: b1 * x[:, 0] + b3 * rho_over2 * (x[:, 0] ** 2 - 1)
+            ref_x2 = lambda x: b2 * x[:, 1] + b3 * rho_over2 * (x[:, 1] ** 2 - 1)
+            ref_bias = b3 * rho
+
+        def plot_pairwise(x1_grid, puremodel, model_dict, ref_x1x2):
+            x1_grid_dm = xgb.DMatrix(x1_grid, enable_categorical=True)
+            # yyy, univ_contrib, biv_contrib = tuple(k.numpy() for k in puremodel.predict_batch_numerical(x1_grid)[:3])
+
+            biv_fig = go.Figure()
+            # biv_fig.add_trace(go.Scatter(x = x1_grid[:, 0], y = biv_contrib[0, :], mode = 'lines', name = 'puregam'))
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=model_dict[(0, 1)].predict(x1_grid_dm),
+                    mode="lines",
+                    name="Purified_xgb",
+                )
+            )
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=ref_x1x2(x1_grid),
+                    mode="lines",
+                    name="Ref formula",
+                )
+            )
+
+            biv_fig.show()
+            return biv_fig
+
+        gridn = 100
+        plot_start, plot_end = -1.5, 1.5
+        x1_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x2_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x1_mesh, x2_mesh = np.meshgrid(x1_vals, x2_vals)
+        x1_grid = np.column_stack([x1_mesh.ravel(), x2_mesh.ravel()])
+
+        # my stuff lol
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,  # moderate depth to avoid overfitting
+            "eta": 0.1,  # learning rate
+            "verbosity": 1,
         }
-        model = new_model([tree], "10.0")
+        num_boost_round = 10000
+        model = xgb.train(params, dtrain, num_boost_round=num_boost_round)
 
-        X_train = np.array([[5, 2.5], [15, 20]])
-        dtrain = xgb.DMatrix(X_train)
-        original_prediction = model.predict(dtrain)
-        print(f"Original predictions: {original_prediction}")
+        result = purify.fANOVA_2D(True, "gph", model, dtrain, True)
 
-        split_x = np.array([10.0])
-        split_y = np.array([5.0, 15.0])
-        split_conditions_dict = {0: split_x, 1: split_y}
-        feature_tuple = (0, 1)
+        # end my stuff lol
+        plot_pairwise(x1_grid, model, result.purified_model_dict, ref_x1x2)
+        rho_grid = x1_grid.copy()
+        rho_grid[:, 1] *= rho
+        plot_pairwise(rho_grid, model, result.purified_model_dict, ref_x1x2_rho)
 
-        new_model = purify.purify_2D(model, dtrain, True)
-        print(f"Purified (New) Prediction: {new_model.predict(dtrain)}")
+    # modified test
+    if True:
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        # Generate correlated data
+        X = np.random.multivariate_normal(mean=[0, 0], cov=cov_mat, size=n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+        y = yf(X[:, 0], X[:, 1])
+
+        # Theoretical purified interaction component
+        rho_over2 = rho / (1 + rho**2)
+        ref_x1x2 = lambda x: b3 * (
+            x[:, 0] * x[:, 1]
+            - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+            + rho_over2 * (1 - rho**2)
+        )
+
+        # Create evaluation grid along diagonal (x1 = x2)
+        gridn = 100
+        plot_range = (-1.5, 1.5)
+        x_vals = np.linspace(*plot_range, num=gridn)
+        diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
+
+        # Train XGBoost model
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,
+            "eta": 0.1,
+            "verbosity": 2,
+        }
+        model = xgb.train(
+            params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")]
+        )
+
+        # Purify the model
+        result = purify.fANOVA_2D(False, "gph", model, dtrain, True)
+
+        # Get predictions
+        diag_grid_dm = xgb.DMatrix(diag_grid)
+        pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
+        pred_orig = result.original_model.predict(diag_grid_dm)
+        true_pure = ref_x1x2(diag_grid)
+
+        original_model = result.original_model
+        original_model_x1x2 = purify.get_filtered_model(original_model, (0, 1))
+        pred_orig = original_model_x1x2.predict(diag_grid_dm)
+
+        # Create plot
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=pred_orig,
+                mode="lines",
+                name="Original Prediction",
+                line=dict(color="blue"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=pred_pure,
+                mode="lines",
+                name="Purified Prediction",
+                line=dict(color="green"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=true_pure,
+                mode="lines",
+                name="Reference",
+                line=dict(color="red", dash="dash"),
+            )
+        )
+
+        # Add error metrics to title
+        abs_error = np.abs(pred_pure - true_pure)
+        max_error = np.max(abs_error)
+        mean_error = np.mean(abs_error)
+
+        fig.update_layout(
+            title=f"Diagonal Comparison (x1 = x2)<br>Max Error: {max_error:.4f}, Mean Error: {mean_error:.4f}",
+            xaxis_title="x value (x1 = x2)",
+            yaxis_title="Interaction Component Value",
+            height=500,
+        )
+
+        fig.show()

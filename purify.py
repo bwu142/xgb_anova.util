@@ -214,8 +214,8 @@ def get_split_conditions(trees, feature_list):
         feature_list (list): list of all possible split_indices
     Returns:
         dict:
-            key: split_index
-            value: sorted numpy array of unique split conditions
+            key (int): split_index
+            value (numpy array): sorted numpy array of unique split conditions
     """
     split_dict = {split_index: set() for split_index in feature_list}
 
@@ -857,8 +857,6 @@ def purify_two_features(
     grid_alphas = np.zeros((num_bins_x, num_bins_y))
 
     # get grid_predictions (prediction values from submodel) (N, 1) --> (N,)
-    data_x_col = dataset.get_data()[:, feature_tuple[0]]
-
     data_x_col = get_data_col(dataset, feature_tuple[0])
     data_y_col = get_data_col(dataset, feature_tuple[1])
 
@@ -969,19 +967,20 @@ def purify_one_feature(
     binned_indices = np.digitize(data_col, split_condition_vector)
     predictions = submodel.predict(dataset)
 
-    # get mean prediction
-    current_vals = np.array(vector_alpha[binned_indices] + predictions)
-    mean_offset = 0.0
-    mean_offset = current_vals.mean()
+    # working?? but not purifying across bins, but instead the entire dataset
+    if True:
+        # get mean prediction
+        current_vals = np.array(vector_alpha[binned_indices] + predictions)
+        mean_offset = 0.0
+        mean_offset = current_vals.mean()
 
-    # construct alpha tree
-    vector_alpha -= mean_offset
-    alpha_tree = tree_from_vector(
-        vector_alpha, split_condition_vector, feature_tuple[0]
-    )
+        # construct alpha tree
+        vector_alpha -= mean_offset
+        alpha_tree = tree_from_vector(
+            vector_alpha, split_condition_vector, feature_tuple[0]
+        )
 
-    # return
-    return mean_offset, alpha_tree
+        return mean_offset, alpha_tree
 
     # trial one (mimics 2D)
     if False:
@@ -998,27 +997,23 @@ def purify_one_feature(
             print("MEAN VECTOR", mean_vector)
             return mean_vector
 
-        for i in range(max_iter):
-            print("purify_one_feature iteration", i)
-            prev_vector_alpha = vector_alpha.copy()
-            current_vals = vector_alpha[binned_indices] + predictions
-            bin_means = get_bin_means(current_vals, binned_indices, num_bins)
+        current_vals = vector_alpha[binned_indices] + predictions
+        bin_means = get_bin_means(current_vals, binned_indices, num_bins)
+        print("bin_means:", bin_means)
 
-            vector_alpha -= bin_means
-            mean_offset += bin_means.mean()  #### a little unsure about this
-
-            # convergence check
-            if np.abs(vector_alpha - prev_vector_alpha).max() < epsilon:
-                break
+        # i think the issue is here --> we always add the same mean_offset to our prediction, BUT, we subtract a different mean depending on the bin that the specific test point falls into
+        vector_alpha -= bin_means
+        mean_offset = 0.0
+        mean_offset += np.mean(bin_means)
 
         alpha_tree = tree_from_vector(
             vector_alpha, split_condition_vector, feature_tuple[0]
         )
-        print(
-            "purify_one_feature alpha_tree_predict",
-            rt.alpha_tree_predict(alpha_tree, dataset),
-        )
-        print("purify_one_feature mean_offset", mean_offset)
+        # print(
+        #     "purify_one_feature alpha_tree_predict",
+        #     rt.alpha_tree_predict(alpha_tree, dataset)[:5],
+        # )
+        # print("purify_one_feature mean_offset", mean_offset)
 
         return mean_offset, alpha_tree
 

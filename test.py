@@ -14,6 +14,7 @@ import filter
 import purify
 from sklearn.metrics import r2_score
 import pygam
+import purify_first_attempt as fa
 
 
 ##############################
@@ -831,34 +832,116 @@ if __name__ == "__main__":
     # test_plot_all(X, y_true, 0.05, 0, -2, 2, -2, 2)
 
     ####### TESTS NOW ######
-    seed = 42
-    n = 1 << 16
-    rho = 0.5
-    b1, b2, b3 = 3, 2, 10
-    cov_mat = np.identity(2)
-    cov_mat[0, 1] = cov_mat[1, 0] = rho
-    DataType = "x1x2"
+    # seed = 42
+    # n = 1 << 16
+    # rho = 0.5
+    # b1, b2, b3 = 3, 2, 10
+    # cov_mat = np.identity(2)
+    # cov_mat[0, 1] = cov_mat[1, 0] = rho
+    # DataType = "x1x2"
 
-    if DataType == "x1x2":
-        np.random.seed(seed)
-        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    # if DataType == "x1x2":
+    #     np.random.seed(seed)
+    #     X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    #     yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+    #     y = yf(X[:, 0], X[:, 1])
+    #     plot_start, plot_end = -1.5, 1.5
+    #     Num_identity = 0
+    # elif DataType == "x1x2L":
+    #     np.random.seed(seed)
+    #     X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+    #     yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+    #     y = yf(X[:, 0], X[:, 1])
+    #     plot_start, plot_end = -1.5
+    #     Num_identity = 0
+    # elif DataType == "x1x2x3":
+    #     np.random.seed(seed)
+    #     cov_mat3 = np.full((3, 3), rho)
+    #     np.fill_diagonal(cov_mat3, 1)
+
+    # model, dtrain, dtest = setup_model(X, y, 100)
+    # my_f = purify.fANOVA_2D(False, model, dtrain, True, "test_py")
+    # x_vals = np.linspace(-1.5, 1.5, 200)
+    # plot_components_ben(my_f.purified_model_dict, (0,), x_vals, yf)
+
+    if True:
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        # Generate correlated data
+        X = np.random.multivariate_normal(mean=[0, 0], cov=cov_mat, size=n)
         yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
         y = yf(X[:, 0], X[:, 1])
-        plot_start, plot_end = -1.5, 1.5
-        Num_identity = 0
-    elif DataType == "x1x2L":
-        np.random.seed(seed)
-        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-        y = yf(X[:, 0], X[:, 1])
-        plot_start, plot_end = -1.5
-        Num_identity = 0
-    elif DataType == "x1x2x3":
-        np.random.seed(seed)
-        cov_mat3 = np.full((3, 3), rho)
-        np.fill_diagonal(cov_mat3, 1)
 
-    model, dtrain, dtest = setup_model(X, y, 100)
-    my_f = purify.fANOVA_2D(False, model, dtrain, True, "test_py")
-    x_vals = np.linspace(-1.5, 1.5, 200)
-    plot_components_ben(my_f.purified_model_dict, (0,), x_vals, yf)
+        # Theoretical purified interaction component
+        rho_over2 = rho / (1 + rho**2)
+        ref_x1x2 = lambda x: b3 * (
+            x[:, 0] * x[:, 1]
+            - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+            + rho_over2 * (1 - rho**2)
+        )
+
+        # Create evaluation grid along diagonal (x1 = x2)
+        gridn = 100
+        plot_range = (-1.5, 1.5)
+        x_vals = np.linspace(*plot_range, num=gridn)
+        diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
+
+        # Train XGBoost model
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,
+            "eta": 0.1,
+            "verbosity": 2,
+        }
+        model = xgb.train(
+            params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")]
+        )
+
+        # Purify the model
+        result = fa.fANOVA_2D(False, model, dtrain, True, "fa")
+
+        # Get predictions
+        diag_grid_dm = xgb.DMatrix(diag_grid)
+        pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
+        true_pure = ref_x1x2(diag_grid)
+
+        # Create plot
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=pred_pure,
+                mode="lines",
+                name="Purified prediction",
+                line=dict(color="blue"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=true_pure,
+                mode="lines",
+                name="Reference",
+                line=dict(color="red", dash="dash"),
+            )
+        )
+
+        # Add error metrics to title
+        abs_error = np.abs(pred_pure - true_pure)
+        max_error = np.max(abs_error)
+        mean_error = np.mean(abs_error)
+
+        fig.update_layout(
+            title=f"Diagonal Comparison (x1 = x2)<br>Max Error: {max_error:.4f}, Mean Error: {mean_error:.4f}",
+            xaxis_title="x value (x1 = x2)",
+            yaxis_title="Interaction Component Value",
+            height=500,
+        )
+
+        fig.show()
