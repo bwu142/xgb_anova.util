@@ -1,767 +1,335 @@
 # Copyright (c) 2025 Ben Wu <benjamin.x.wu@gmail.com>
 # Distributed under the BSD 3-Clause License
 
-import pytest
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
-import matplotlib.pyplot as plt
-import plotly.express as px
 import plotly.graph_objects as go
-import json
-import filter
-import purify
 from sklearn.metrics import r2_score
-import pygam
-import purify_first_attempt as fa
+import purify
+from pygam import LinearGAM, s, f
 
 
-##############################
-##### PURIFICATION TESTS #####
-##############################
-def test_independence_2(rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true):
+##### HELPER FUNCTIONS #####
+def new_model(trees, base_score, file_name="test_model.json"):
     """
-    Check that pairwise functions produce constant output when their features are fixed.
-        e.g. For g12(x1,x2): Set x1,x2 to random constants → output is constant regardless of other features.
+    Args:
+        trees (list): list of XGBoost trees (dicts)
+        base_score (str):
     """
-    # Setup model and data
-    model, dtrain, dtest = setup_model(
-        rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true
+    # print(trees)
+    new_model_file = {
+        "learner": {
+            "attributes": {},
+            "feature_names": [],
+            "feature_types": [],
+            "gradient_booster": {
+                "model": {
+                    "gbtree_model_param": {
+                        "num_parallel_tree": "1",
+                        "num_trees": str(len(trees)),
+                    },
+                    "iteration_indptr": [0, 1, 2, 3, 4, 5, 6],
+                    "tree_info": [0],
+                    "trees": trees,
+                },
+                "name": "gbtree",
+            },
+            "learner_model_param": {
+                "base_score": "0.0",
+                "boost_from_average": "0",
+                "num_class": "0",
+                "num_feature": "2",
+                "num_target": "1",
+            },
+            "objective": {
+                "name": "reg:squarederror",
+                "reg_loss_param": {"scale_pos_weight": "1"},
+            },
+        },
+        "version": [3, 0, 2],
+    }
+    # print(new_model_file)
+    base_score = str(float(base_score))
+    new_model = purify.update_metadata(new_model_file, base_score, True, file_name)
+
+    model_file = purify.get_model_file(new_model, True, file_name)
+    # print(model_file["learner"]["gradient_booster"]["model"]["trees"])
+    return new_model
+
+
+def alpha_tree_predict(alpha_tree, dataset):
+    alpha_tree_model = new_model([alpha_tree], "0.0", "alpha_tree_model.json")
+    prediction = alpha_tree_model.predict(dataset)
+    return prediction
+
+
+##### HELPER FUNCTION TESTS #####
+def test_vector_to_tree(
+    alpha_vector, split_condition_vector, feature_index, dataset, true_prediction
+):
+    tree_from_vector = purify.tree_from_vector(
+        alpha_vector, split_condition_vector, feature_index
     )
-    # Decompose and purify model
-    _, purified_components, _ = purify.fANOVA_2D(model, dtrain)
 
-    # Convert D_matrix to Dataframe for mutability
-    D_all = get_random_input_set(dtrain, dtest)
-    X_all = D_all.get_data()
-    if hasattr(X_all, "toarray"):
-        X_all = X_all.toarray()
-    feature_names = D_all.feature_names
-    X_df_all = pd.DataFrame(X_all, columns=feature_names)
+    test_model = new_model([tree_from_vector], "0.0")
+    test_model_prediction = test_model.predict(dataset)
+    print(f"TEST_VECTOR_PREDICTION: {test_model_prediction}")
 
-    # Loop through each feature
-    for feature, feature_model in purified_components.items():
-        # Testing pairwise-interaction independence only
-        if feature in {"x1", "x2", "x3", "x1x2x3"}:
-            continue
-
-        # Mutate Dataframe by fixing feature to constant C for all test points
-        X_df_fixed = X_df_all.copy()
-        C = 50  # constant value
-
-        component_features = [f"x{c}" for c in feature if c.isdigit()]
-        for feature in component_features:
-            X_df_fixed[feature] = C
-
-        D_fixed = xgb.DMatrix(X_df_fixed, feature_names=feature_names)
-        prediction = feature_model.predict(D_fixed)
-        assert len(set(prediction)) == 1
+    assert np.allclose(test_model_prediction, true_prediction, atol=1e-4, rtol=0.0)
 
 
-def test_accuracy():
+def test_grid_to_tree(
+    grid, split_vector_x, split_vector_y, feature_tuple, dataset, true_prediction
+):
+    tree_from_grid = purify.tree_from_grid(
+        grid, split_vector_x, split_vector_y, feature_tuple
+    )
+    test_model = new_model([tree_from_grid], "0.0")
+
+    test_model_prediction = test_model.predict(dataset)
+    print(f"TEST_GRID_PREDICTION: {test_model_prediction}")
+
+    assert np.allclose(test_model_prediction, true_prediction, atol=1e-4, rtol=0.0)
+
+
+##### UNUSED TESTS #####
+def test_purity(model, dataset):
+    # Run purification
+    result = purify.fANOVA_2D(False, "purity", model, dataset)
+
+    # Get all split thresholds once for all features from the whole model
+    feature_list = list(range(dataset.num_col()))
+    tree_list = purify.get_model_file(model, save_to_disk=False)["learner"][
+        "gradient_booster"
+    ]["model"]["trees"]
+    split_conditions_dict = purify.get_split_conditions(tree_list, feature_list)
+
+    # Iterate through all combinations (main effects and pairwise interactions)
+    for feature_tuple, submodel in result.purified_model_dict.items():
+        # main effect
+        if len(feature_tuple) == 1:
+            main_effect_prediction = submodel.predict(dataset)
+            mean = np.mean(main_effect_prediction)
+            assert abs(mean) < 1e-3
+        # interaction
+        else:
+            if True:
+                split_x = split_conditions_dict[feature_tuple[0]]
+                split_y = split_conditions_dict[feature_tuple[1]]
+
+                data_x_col = purify.get_data_col(dataset, feature_tuple[0])
+                data_y_col = purify.get_data_col(dataset, feature_tuple[1])
+
+                x_bins = np.digitize(data_x_col, split_x)
+                y_bins = np.digitize(data_y_col, split_y)
+                predictions = submodel.predict(dataset)
+
+                num_bins_x = len(split_x) + 1
+                num_bins_y = len(split_y) + 1
+
+                grid_sums = np.zeros((num_bins_x, num_bins_y))
+                grid_counts = np.zeros((num_bins_x, num_bins_y))
+
+                for xb, yb, pred in zip(x_bins, y_bins, predictions):
+                    grid_sums[xb, yb] += pred
+                    grid_counts[xb, yb] += 1
+
+                # Data-weighted mean across each axis (skip empty bins)
+                mean_along_x = np.zeros(num_bins_x)
+                mean_along_y = np.zeros(num_bins_y)
+
+                # Along x (columns: for each y_bin, sum over x, weighted)
+                for yb in range(num_bins_y):
+                    valid = grid_counts[:, yb] > 0
+                    if valid.any():
+                        means = np.zeros(num_bins_x)
+                        means[valid] = grid_sums[valid, yb] / grid_counts[valid, yb]
+                        weights = grid_counts[valid, yb]
+                        mean_along_x[yb] = (
+                            np.sum(means[valid] * weights) / weights.sum()
+                        )
+
+                # Along y (rows: for each x_bin, sum over y, weighted)
+                for xb in range(num_bins_x):
+                    valid = grid_counts[xb, :] > 0
+                    if valid.any():
+                        means = np.zeros(num_bins_y)
+                        means[valid] = grid_sums[xb, valid] / grid_counts[xb, valid]
+                        weights = grid_counts[xb, valid]
+                        mean_along_y[xb] = (
+                            np.sum(means[valid] * weights) / weights.sum()
+                        )
+
+                assert np.all(
+                    np.abs(mean_along_x) < 1e-3
+                ), f"Interaction (weighted, x-axis) not zero: {mean_along_x}"
+                assert np.all(
+                    np.abs(mean_along_y) < 1e-3
+                ), f"Interaction (weighted, y-axis) not zero: {mean_along_y}"
+            if False:
+                split_condition_vector_x = split_conditions_dict[feature_tuple[0]]
+                split_condition_vector_y = split_conditions_dict[feature_tuple[1]]
+                data_x_col = purify.get_data_col(dataset, feature_tuple[0])
+                data_y_col = purify.get_data_col(dataset, feature_tuple[1])
+
+                x_binned_indices = np.digitize(
+                    data_x_col, split_condition_vector_x
+                )  # (N x 1)
+                y_binned_indices = np.digitize(
+                    data_y_col, split_condition_vector_y
+                )  # (N x 1)
+
+                predictions = submodel.predict(dataset)
+
+                num_bins_x = len(split_condition_vector_x) + 1
+                num_bins_y = len(split_condition_vector_y) + 1
+                sum_vector_x = np.zeros(num_bins_x)
+                sum_vector_y = np.zeros(num_bins_y)
+                count_vector_x = np.zeros(num_bins_x)
+                count_vector_y = np.zeros(num_bins_y)
+
+                np.add.at(sum_vector_x, x_binned_indices, predictions)
+                np.add.at(sum_vector_y, y_binned_indices, predictions)
+                np.add.at(count_vector_x, x_binned_indices, predictions)
+                np.add.at(count_vector_y, y_binned_indices, predictions)
+
+                # check purity across rows
+                nonzero = count_vector_x > 0
+                mean_vector_x = np.zeros(num_bins_x)
+                mean_vector_x[nonzero] = sum_vector_x[nonzero] / count_vector_x[nonzero]
+                print("mean_vector_x: ", mean_vector_x)
+                assert np.any(mean_vector_x > 1e-3) is True
+
+                # check purity across cols
+                nonzero = count_vector_y > 0
+                mean_vector_y = np.zeros(num_bins_y)
+                mean_vector_y[nonzero] = sum_vector_y[nonzero] / count_vector_y[nonzero]
+                print("mean_vector_y: ", mean_vector_y)
+                assert np.any(mean_vector_y > 1e-3) is True
+
+
+def plot_diag(model, dataset):
     """
-    check f is a good fit to calculating metrics on the training and test data set, e.g. r^2
+    Args:
+        result (fANOVA_Result object):
+        dataset (dataframe)
+        rho_val (float between -1, 1).
+        yf (function)
     """
-    model, dtrain, dtest = setup_model()
+    # purify model
+    result = purify.fANOVA_2D(False, "gph_diag", model, xgb.DMatrix(dataset))
 
-    # Get true labels
-    y_train = dtrain.get_label()
-    y_test = dtest.get_label()
+    # theoretical purified interaction component
+    rho_over2 = rho / (1 + rho**2)
+    ref_x1x2 = lambda x: b3 * (
+        x[:, 0] * x[:, 1]
+        - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+        + rho_over2 * (1 - rho**2)
+    )
+
+    # Create evaluation grid along diagonal (x1 = x2)
+    gridn = 100
+    plot_range = (-1.5, 1.5)
+    x_vals = np.linspace(*plot_range, num=gridn)
+    diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
 
     # Get predictions
-    y_pred_train = model.predict(dtrain)
-    y_pred_test = model.predict(dtest)
+    diag_grid_dm = xgb.DMatrix(diag_grid)
+    pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
+    pred_orig = result.original_model.predict(diag_grid_dm)
+    true_pure = ref_x1x2(diag_grid)
 
-    # Compute R^2 scores
-    r2_train = r2_score(y_train, y_pred_train)
-    r2_test = r2_score(y_test, y_pred_test)
+    original_model = result.original_model
+    original_model_x1x2 = purify.get_filtered_model(original_model, (0, 1))
+    pred_orig = original_model_x1x2.predict(diag_grid_dm)
 
-    print(f"R^2 on training set: {r2_train:.4f}")
-    print(f"R^2 on test set: {r2_test:.4f}")
-
-    # Assert reasonable goodness of fit (can be tuned)
-    assert r2_train > 0.9, "Model underfits training set"
-    assert r2_test > 0.7, "Model may overfit or generalize poorly"
-
-
-def test_equal_predictions_1(rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true):
-    """
-    test that f (original model) and g (purified model) are identical for each data point in a sample of random input set from both training and test data
-        i.e. check that f(X) = g(X)
-    """
-    model, dtrain, dtest = setup_model(
-        rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true
-    )
-    random_input_set = get_random_input_set(dtrain, dtest)
-
-    model_prediction = model.predict(random_input_set)
-    purified_model = purify.purify_2D(model, dtrain)
-    purified_model_prediction = purified_model.predict(random_input_set)
-
-    assert np.allclose(model_prediction, purified_model_prediction, atol=0.1)
-
-
-def test_equal_predictions_2(rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true):
-    """
-    test that prediction from purify_2D (entire purified model) equals prediction from summing up predictions from components of purified_model
-        i.e. g(X) = g0 + g1(x1) + g2(x2) + g12(x1, x2) + g13(x1, x3) + g23(x2, x3) + g123(x1, x2, x3)
-    """
-    model, dtrain, dtest = setup_model(
-        rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true
-    )
-    random_input_set = get_random_input_set(dtrain, dtest)
-
-    # Purified model total prediction
-    purified_model = purify.purify_2D(model, dtrain)
-    purified_model_prediction = purified_model.predict(random_input_set)
-
-    # Purified model sum-to-total prediction
-    _, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
-    num_samples = random_input_set.num_row()
-    purified_prediction_sum = np.zeros(num_samples)
-
-    # Make into new function
-    for purified_model in purified_model_dict.values():
-        purified_prediction_sum += purified_model.predict(random_input_set)
-    purified_prediction_sum += bias
-
-    print(purified_model_prediction[:10])
-    print(purified_prediction_sum[:10])
-    assert np.allclose(
-        purified_prediction_sum, purified_model_prediction, atol=0.01, rtol=0
-    )
-
-
-def test_equal_predictions_3(rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true):
-    """
-    check f(X) = g0 + g1(x1) + g2(x2) + g12(x1, x2) + g13(x1, x3) + g23(x2, x3) + g123(x1, x2, x3)
-    """
-    model, dtrain, dtest = setup_model(
-        rho_val, b1_val, b2_val, b3_val, X_dataframe, y_true
-    )
-    random_input_set = get_random_input_set(dtrain, dtest)
-    model_prediction = model.predict(random_input_set)  # model prediction
-
-    _, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
-
-    num_samples = random_input_set.num_row()
-    purified_prediction_sum = np.zeros(num_samples)
-
-    for purified_model in purified_model_dict.values():
-        purified_prediction_sum += purified_model.predict(random_input_set)
-    purified_prediction_sum += bias
-
-    print(purified_prediction_sum[:10])
-    print(model_prediction[:10])
-    assert np.allclose(purified_prediction_sum, model_prediction, atol=0.01)
-
-
-def test_independence(X, y):
-    """
-    Check that each purified, main-effect component depends only on its intended features.
-        e.g. For g1(x1): Fix x1 and randomize other features → output remains constant.
-    """
-    # Setup model and data
-    model, dtrain, dtest = setup_model(X, y)
-
-    # Decompose and purify model
-    _, purified_components, _ = purify.fANOVA_2D(model, dtrain)
-
-    # Convert D_matrix to Dataframe for mutability
-    D_all = get_random_input_set(dtrain, dtest)
-    X_all = D_all.get_data()
-    if hasattr(X_all, "toarray"):
-        X_all = X_all.toarray()
-    feature_names = D_all.feature_names
-    X_df_all = pd.DataFrame(X_all, columns=feature_names)
-
-    # Loop through each feature
-    for feature_tuple, feature_model in purified_components.items():
-        # Testing main effect independence only
-        if len(feature_tuple) == 1:
-            # Mutate Dataframe by fixing feature to constant C for all test points
-            X_df_fixed = X_df_all.copy()
-            C = 50  # constant value
-            feature_index = feature_tuple[0]
-
-            X_df_fixed[feature_index] = C
-            D_fixed = xgb.DMatrix(X_df_fixed, feature_names=feature_names)
-            prediction = feature_model.predict(D_fixed)
-            assert len(set(prediction)) == 1
-        elif len(feature_tuple) == 2:
-            # Mutate Dataframe by fixing feature to constant C for all test points
-            X_df_fixed = X_df_all.copy()
-            C = 50  # constant value
-
-            for feature in feature_tuple:
-                X_df_fixed[feature] = C
-
-            D_fixed = xgb.DMatrix(X_df_fixed, feature_names=feature_names)
-            prediction = feature_model.predict(D_fixed)
-            assert len(set(prediction)) == 1
-
-
-####################
-#### MAIN TESTS ####
-####################
-def setup_model(X, y, num_trees=100):
-    # Setup
-    np.random.seed(42)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42
-    )
-
-    dtrain = xgb.DMatrix(X_train, label=y_train)
-    dtest = xgb.DMatrix(X_test, label=y_test)
-
-    params = {
-        "max_depth": 2,
-        "learning_rate": 1.0,
-        "objective": "reg:squarederror",
-        "random_state": 42,
-    }
-    model = xgb.train(
-        params=params,
-        dtrain=dtrain,
-        num_boost_round=num_trees,  # Equivalent to n_estimators
-        evals=[(dtrain, "train"), (dtest, "test")],
-        verbose_eval=True,
-    )
-    return model, dtrain, dtest
-
-
-def get_random_input_set(dtrain, dtest):
-    """Get random input set (DMatrix) from dtrain and dtest"""
-    # Get numpy arrays from DMatrix
-    X_train = dtrain.get_data()
-    X_test = dtest.get_data()
-
-    if hasattr(X_train, "toarray"):  # Handle sparse matrices
-        X_train = X_train.toarray()
-        X_test = X_test.toarray()
-
-    # Combine and shuffle
-    X_combined = np.vstack([X_train, X_test])
-    np.random.seed(42)  # For reproducibility
-    indices = np.random.permutation(len(X_combined))
-
-    # Take a random subset, e.g., 100 samples
-    sample_size = min(100, len(X_combined))
-    X_sample = X_combined[indices[:sample_size]]
-
-    # Include feature names to avoid prediction errors
-    return xgb.DMatrix(X_sample, feature_names=dtrain.feature_names)
-
-
-def test_equal_predictions(X, y, num_trees=100):
-    """
-    check f(X) = g0 + g1(x1) + g2(x2) + g12(x1, x2) + g13(x1, x3) + g23(x2, x3) + g123(x1, x2, x3)
-    """
-    model, dtrain, dtest = setup_model(X, y, num_trees)
-    # random_input_set = get_random_input_set(dtrain, dtest)
-    # model_prediction = model.predict(random_input_set)
-
-    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
-
-    # Original Model
-    model_prediction = model.predict(dtrain)
-    # Purified Model
-    purified_model_prediction = purified_model.predict(dtrain)
-    # Purified Prediction Sum
-    num_samples = dtrain.num_row()
-    purified_prediction_sum = np.zeros(num_samples)
-    for purified_model in purified_model_dict.values():
-        purified_prediction_sum += purified_model.predict(dtrain)
-    purified_prediction_sum += bias
-
-    # Comparisons
-    print(f"original_model_prediction: {model_prediction}")
-    print(f"purified_model_prediction: {purified_model_prediction}")
-    print(f"purified_subset_sum_prediction: {purified_prediction_sum}")
-
-    assert np.allclose(
-        model_prediction, purified_model_prediction, atol=1e-5, rtol=0.0
-    ), "model_prediction vs. purified_model_prediction not precise!"
-    assert np.allclose(
-        model_prediction, purified_prediction_sum, atol=1e-5, rtol=0.0
-    ), "model_prediction vs. purified_prediction_sum not precise!"
-    assert np.allclose(
-        purified_model_prediction, purified_prediction_sum, atol=1e-5, rtol=0.0
-    ), "purified_model_prediction vs. purified_prediction_sum not precise!"
-
-
-def plot_against_true(X, y, b1, b2, b3, rho, plot_start=-1.5, plot_end=1.5):
-    # Fit and purify model
-    model, dtrain, dtest = setup_model(X, y)
-    purified_model, purified_model_dict, bias = purify.fANOVA_2D(model, dtrain)
-
-    # Generate meshgrid
-    x = np.linspace(plot_start, plot_end, 100)
-    x1, x2 = np.meshgrid(x, x)
-    grid = np.column_stack((x1.ravel(), x2.ravel()))
-
-    # True purified interaction f12
-    term1 = x1 * x2
-    term2 = (rho / (1 + rho**2)) * (x1**2 + x2**2)
-    term3 = rho * (1 - rho**2) / (1 + rho**2)
-    z_true = b3 * (term1 - term2 + term3)
-
-    # Predicted purified interaction f12 from XGBoost model
-    dgrid = xgb.DMatrix(grid)
-    z_pred = purified_model_dict[(0, 1)].predict(dgrid).reshape(x1.shape)
-
-    # Plot both surfaces
+    # Create plot
     fig = go.Figure()
-
     fig.add_trace(
-        go.Surface(
-            z=z_true, x=x1, y=x2, colorscale="Viridis", opacity=0.6, name="True f₁₂"
-        )
-    )
-    fig.add_trace(
-        go.Surface(
-            z=z_pred,
-            x=x1,
-            y=x2,
-            colorscale="Cividis",
-            opacity=0.6,
-            name="Purified f₁₂ (XGBoost)",
-        )
-    )
-
-    fig.update_layout(
-        title="True vs XGBoost Purified f₁₂(x₁, x₂)",
-        scene=dict(xaxis_title="x₁", yaxis_title="x₂", zaxis_title="f₁₂"),
-        width=800,
-        height=700,
-    )
-    fig.show()
-
-
-def plot_components_ben(purified_model_dict, feature_tuple, x_vals, y_ref_func):
-    model = purified_model_dict[feature_tuple]
-
-    if feature_tuple == (0,):
-        # f1
-        X = np.zeros((len(x_vals), 2))
-        X[:, 0] = x_vals
-        dX = xgb.DMatrix(X)
-
-        y_model = model.predict(dX)
-        y_true = y_ref_func(x_vals)
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x_vals, y=y_true, mode="lines", name="True f1"))
-        fig.add_trace(go.Scatter(x=x_vals, y=y_model, mode="lines", name="Purified f1"))
-        fig.update_layout(
-            title="f1: Purified vs True", xaxis_title="x1", yaxis_title="value"
-        )
-        fig.show()
-
-    elif feature_tuple == (1,):
-        # f2
-        X = np.zeros((len(x_vals), 2))
-        X[:, 1] = x_vals
-        dX = xgb.DMatrix(X)
-
-        y_model = model.predict(dX)
-        y_true = y_ref_func(x_vals)
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x_vals, y=y_true, mode="lines", name="True f2"))
-        fig.add_trace(go.Scatter(x=x_vals, y=y_model, mode="lines", name="Purified f2"))
-        fig.update_layout(
-            title="f2: Purified vs True", xaxis_title="x2", yaxis_title="value"
-        )
-        fig.show()
-
-    elif feature_tuple == (0, 1):
-        # f12
-        x1, x2 = x_vals
-        X_grid = np.column_stack([x1.ravel(), x2.ravel()])
-        dX = xgb.DMatrix(X_grid)
-
-        y_model = model.predict(dX).reshape(x1.shape)
-        y_true = y_ref_func(x1, x2)
-
-        fig = go.Figure()
-        fig.add_trace(
-            go.Contour(
-                z=y_true,
-                x=x1[0],
-                y=x2[:, 0],
-                colorscale="Blues",
-                contours_coloring="lines",
-                name="True f12",
-            )
-        )
-        fig.add_trace(
-            go.Contour(
-                z=y_model,
-                x=x1[0],
-                y=x2[:, 0],
-                colorscale="Reds",
-                contours_coloring="lines",
-                name="Purified f12",
-            )
-        )
-        fig.update_layout(
-            title="f12: Purified vs True", xaxis_title="x1", yaxis_title="x2"
-        )
-        fig.show()
-
-
-def plot_components(y_pred_func, x_vals, y_ref_func):
-    """
-    y_pred_func: submodel from purified_model_dict
-
-    x_vals:
-    y_ref_func: lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
-    """
-    # Construct input data for purified model prediction
-    X1 = np.zeros((len(x_vals), 2))
-    X1[:, 0] = x_vals
-    X2 = np.zeros((len(x_vals), 2))
-    X2[:, 1] = x_vals
-    dX1 = xgb.DMatrix(X1)
-    dX2 = xgb.DMatrix(X2)
-
-    model_pred = y_pred_func.predict(dX1)
-    ref_pred = y_ref_func(x_vals)
-
-    true_f1
-
-    # True component functions (centered)
-    true_f1 = (
-        b1 * x_vals + b3 * rho / (1 + rho**2) * x_vals**2 - b3 * rho / (1 + rho**2)
-    )
-    true_f2 = (
-        b2 * x_vals + b3 * rho / (1 + rho**2) * x_vals**2 - b3 * rho / (1 + rho**2)
-    )
-
-    # Construct input data for purified model prediction
-    X1 = np.zeros((len(x_vals), 2))
-    X1[:, 0] = x_vals
-    X2 = np.zeros((len(x_vals), 2))
-    X2[:, 1] = x_vals
-    dX1 = xgb.DMatrix(X1)
-    dX2 = xgb.DMatrix(X2)
-
-    # Predicted component functions
-    pred_f1 = purified_model_dict[(0,)].predict(dX1)
-    pred_f2 = purified_model_dict[(1,)].predict(dX2)
-
-    # Plot f1
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(x=x_vals, y=true_f1, mode="lines", name="True f1"))
-    fig1.add_trace(
         go.Scatter(
             x=x_vals,
-            y=pred_f1,
+            y=pred_orig,
             mode="lines",
-            name="Purified f1",
-            line=dict(dash="dash"),
+            name="Original Prediction",
+            line=dict(color="blue"),
         )
     )
-    fig1.update_layout(
-        title="True vs Purified f1(x1)", xaxis_title="x1", yaxis_title="f1(x1)"
-    )
-
-    # Plot f2
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=x_vals, y=true_f2, mode="lines", name="True f2"))
-    fig2.add_trace(
+    fig.add_trace(
         go.Scatter(
             x=x_vals,
-            y=pred_f2,
+            y=pred_pure,
             mode="lines",
-            name="Purified f2",
-            line=dict(dash="dash"),
+            name="Purified Prediction",
+            line=dict(color="green"),
         )
     )
-    fig2.update_layout(
-        title="True vs Purified f2(x2)", xaxis_title="x2", yaxis_title="f2(x2)"
-    )
-
-    fig1.show()
-    fig2.show()
-
-    return fig1, fig2
-
-
-def test_purified_mean_zero(X, y, epsilon=1, C=0):
-    """
-    Check that f(x1, x2) component has mean 0 over a slice of data where one feature is ~ constant
-    """
-    ##### SETUP #####
-    model, dtrain, dtest = setup_model(X, y)
-    _, purified_components, _ = purify.fANOVA_2D(model, dtrain)
-
-    # Convert to DataFrame
-    X_train = dtrain.get_data()
-    if hasattr(X_train, "toarray"):
-        X_train = X_train.toarray()
-    n_points, n_features = X_train.shape
-
-    ##### CONSTRUCT TEST SET WITH FIXED FEATURE #####
-
-    for varied_index in range(n_features):
-        for fixed_index in range(n_features):
-            if fixed_index == varied_index:
-                continue
-            mask = np.abs(X_train[:, fixed_index] - C) < epsilon
-            if not np.any(mask):
-                print(f"No points found with x{fixed_index+1} ≈ {C}")
-                continue
-
-            X_slice = X_train[mask]
-            d_slice = xgb.DMatrix(X_slice)
-
-            tuple_key = tuple(sorted([varied_index, fixed_index]))
-            pred = purified_components[tuple_key].predict(d_slice)
-            mean_val = np.mean(pred)
-            print(
-                f"mean f_{varied_index},{fixed_index} with x{fixed_index} ≈ {C}: {mean_val:.4f}"
-            )
-            assert np.abs(mean_val) < 0.1
-
-
-# should just take in function and
-def test_purity(X, y):
-    """
-    for training data, check the means of component functions are zero. Check the means with the test data - the means should be close to zero.
-    """
-
-    TRAIN_ATOL = 1e-2  # very tight for training data
-    TEST_ATOL = 1e-2  # looser for unseen data
-
-    def _zero_mean_assert(vec, atol, name, split):
-        """Assert that `vec` is mean-zero within tolerance."""
-        m = vec.mean()
-        print(m)
-        assert np.allclose(
-            m, 0.0, atol=atol
-        ), f"{name} not pure on {split} set: mean={m:.3e}, tol={atol}"
-
-    # Build data & model
-    model, dtrain, dtest = setup_model(X, y)
-
-    # Decompose
-    _, purified_model_dict, _ = purify.fANOVA_2D(
-        model, dtrain
-    )  # returns {name: Booster}, bias
-
-    # Loop through every component (skip bias)
-    for feature_tuple, booster in purified_model_dict.items():
-        # Training set
-        pred_train = booster.predict(dtrain)
-        _zero_mean_assert(pred_train, TRAIN_ATOL, feature_tuple, "train")
-
-        # # Test set
-        # pred_test = booster.predict(dtest)
-        # _zero_mean_assert(pred_test, TEST_ATOL, name, "test")
-
-
-def test_plot_1(X, y):
-    """
-    Plot uniform distrubition on 1 factor (main effects vs. grid)
-    This should just plot
-    """
-    ##### SETUP #####
-    model, dtrain, dtest = setup_model(X, y)
-    _, purified_components, bias = purify.fANOVA_2D(model, dtrain)
-
-    # Convert to DataFrame
-    X_sample = dtrain.get_data()
-    if hasattr(X_sample, "toarray"):
-        X_sample = X_sample.toarray()
-    n_features = X_sample.shape[1]
-
-    ##### PLOT BIAS AND MAIN EFFECTS OVER UNIFORM GRID #####
-    x_range = np.linspace(-50, 50, 300)
-    fig = go.Figure()
-
-    # Bias
     fig.add_trace(
         go.Scatter(
-            x=x_range,
-            y=[bias] * len(x_range),
+            x=x_vals,
+            y=true_pure,
             mode="lines",
-            name="base_score",
-            line=dict(dash="dash", width=2, color="black"),
+            name="Reference",
+            line=dict(color="red", dash="dash"),
         )
     )
 
-    # Main Effects
-    for feature_tuple, feature_model in purified_components.items():
-        if len(feature_tuple) != 1:
-            continue
-        feature_index = feature_tuple[0]
-        X_grid = np.zeros((len(x_range), n_features))
-        X_grid[:, feature_index] = x_range
+    if False:
+        # Add error metrics to title
+        abs_error = np.abs(pred_pure - true_pure)
+        max_error = np.max(abs_error)
+        mean_error = np.mean(abs_error)
 
-        dgrid = xgb.DMatrix(X_grid)
-        y_pred = feature_model.predict(dgrid)
-
-        fig.add_trace(
-            go.Scatter(
-                x=x_range,
-                y=y_pred,
-                mode="lines",
-                name=f"{feature_tuple}",
-            )
-        )
-
-    # Layout
     fig.update_layout(
-        title="fANOVA 1st-Order Main Effects (Uniform Grid)",
-        xaxis_title="Feature Value",
-        yaxis_title="f_i(x_i) --> Main Effect Prediction",
-        template="plotly_white",
-        width=900,
+        title=f"Diagonal Comparison (x1 = x2)",
+        xaxis_title="x value (x1 = x2)",
+        yaxis_title="Interaction Component Value",
         height=500,
-        legend=dict(x=0.01, y=0.99),
     )
+
     fig.show()
 
 
-def test_plot_all(
-    X_dataframe, y_true, epsilon=0.05, C=0, x_min=-0.5, x_max=0.5, y_min=-0.5, y_max=0.5
-):
-    """
-    Plot Main Effects and Interactions (fixing one feature) over data distribution
-    """
-    ##### SETUP #####
-    model, dtrain, dtest = setup_model(X_dataframe, y_true)
-    _, purified_components, bias = purify.fANOVA_2D(model, dtrain)
-
-    # Convert to DataFrame
-    X_sample = dtrain.get_data()
-    if hasattr(X_sample, "toarray"):
-        X_sample = X_sample.toarray()
-    n_points, n_features = X_sample.shape
-
-    ##### PLOT BIAS AND 1-FEATURE AGAINST DISTRIBUTION #####
-
-    # Plot bias and main effects
-    fig = go.Figure()
-    x_vals_all = X_sample[:, 0]
-    fig.add_trace(
-        go.Scatter(
-            x=np.sort(x_vals_all),
-            y=[bias] * len(x_vals_all),
-            mode="lines",
-            name="bias (base_score)",
-            line=dict(dash="dash", width=2, color="black"),
-        )
-    )
-
-    for feature_tuple, feature_model in purified_components.items():
-        # Testing main effect independence only
-        if len(feature_tuple) == 1:
-            feature_index = feature_tuple[0]
-
-            y_vals = feature_model.predict(dtrain)
-            x_vals = X_sample[:, feature_index]
-
-            fig.add_trace(
-                go.Scatter(
-                    x=x_vals,
-                    y=y_vals,
-                    mode="markers",
-                    name=f"{feature_tuple}",
-                    # line=dict(dash="dash", width=2),
-                )
-            )
-
-    # Final layout
-    fig.update_layout(
-        title="fANOVA Bias & 1st-Order Main Effects (Against Distribution)",
-        xaxis_title="Feature Value",
-        yaxis_title="Main Effect Prediction",
-        template="plotly_white",
-        width=800,
-        height=500,
-        legend=dict(x=0.01, y=0.99),
-    )
-    fig.show()
-
-    ##### PLOT 2-FEATURE AGAINST DISTRIBUTION (HOLDING ONE-VAR CONSTANT) #####
-    # Grid settings
-    fixed_vals = [-1, -0.5, 0, 0.5, 1]
-    for feature_tuple, feature_model in purified_components.items():
-        # Interaction terms only
-        if len(feature_tuple) != 2:
-            continue
-
-        index_1, index_2 = feature_tuple
-        name_1, name_2 = f"x{index_1 + 1}", f"x{index_2 + 1}"
-
-        # Fix x1, vary x2
-        fig1 = go.Figure()
-        for C in fixed_vals:
-            mask = np.abs(X_sample[:, index_1] - C) < epsilon
-            if mask.sum() < 10:  # too few points → skip
-                print("Not enough points!")
-                continue
-            X_slice = X_sample[mask]
-            x2_vals = X_slice[:, index_2]
-            y_pred = feature_model.predict(xgb.DMatrix(X_slice))
-
-            sorted_index = np.argsort(x2_vals)
-            x_sorted = x2_vals[sorted_index]
-            y_sorted = y_pred[sorted_index]
-
-            fig1.add_trace(
-                go.Scatter(x=x_sorted, y=y_sorted, mode="markers", name=f"{name_1}≈{C}")
-            )
-
-        fig1.update_layout(
-            title=f"{name_1},{name_2}: vary {name_2}  |  {name_1}≈C (ε={epsilon})",
-            xaxis_title=name_2,
-            yaxis_title=f"f_{name_1},{name_2}",
-            template="plotly_white",
-            width=900,
-            height=500,
-        )
-        fig1.update_xaxes(range=[x_min, x_max])
-        fig1.update_yaxes(range=[y_min, y_max])
-        fig1.show()
-
-        # Fix x2, vary x1
-        fig2 = go.Figure()
-        for C in fixed_vals:
-            mask = np.abs(X_sample[:, index_2] - C) < epsilon
-            if mask.sum() < 10:  # too few points → skip
-                print("Not enough points!")
-                continue
-            X_slice = X_sample[mask]
-            x1_vals = X_slice[:, index_1]
-            y_pred = feature_model.predict(xgb.DMatrix(X_slice))
-
-            sorted_index = np.argsort(x1_vals)
-            x_sorted = x1_vals[sorted_index]
-            y_sorted = y_pred[sorted_index]
-
-            fig2.add_trace(
-                go.Scatter(x=x_sorted, y=y_sorted, mode="markers", name=f"{name_2}≈{C}")
-            )
-        fig2.update_layout(
-            title=f"{name_1},{name_2}: vary {name_1}  |  {name_2}≈C (ε={epsilon})",
-            xaxis_title=name_1,
-            yaxis_title=f"f_{name_1},{name_2}",
-            template="plotly_white",
-            width=900,
-            height=500,
-        )
-        fig2.update_xaxes(range=[x_min, x_max])
-        fig2.update_yaxes(range=[y_min, y_max])
-        fig2.show()
+##### MAIN TESTS #####
 
 
-###### COMPARISONS ######
+# Equal Predictions
+def test_equal_predictions(model, dataset):
+    original_prediction = model.predict(dataset)
+    new_model = purify.purify_2D(model, dataset, True, "XYZ.json")
+    purified_prediction = new_model.predict(dataset)
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {purified_prediction[:5]}")
+    assert np.allclose(original_prediction, purified_prediction, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_1(model, dataset):
+    result = purify.fANOVA_2D(False, "test", model, dataset, True)
+    dataset.save_binary("dataset.buffer")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_2(model, dataset):
+    result = purify.fANOVA_2D(True, "test")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+
+
+# Plot Comparisons
 def plot_pairwise(
     model, dataset, rho, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
 ):
@@ -773,7 +341,7 @@ def plot_pairwise(
     if type(dataset) != xgb.DMatrix:
         dataset = xgb.DMatrix(dataset)
     # Purify model
-    result = fa.fANOVA_2D(True, model, dataset, True, "old")
+    result = purify.fANOVA_2D(False, "gph_pair", model, dataset)
     orig_model = result.original_model
     orig_filt_model = purify.get_filtered_model(orig_model, (0, 1))
 
@@ -906,7 +474,7 @@ def plot_marginal(
     if type(dataset) != xgb.DMatrix:
         dataset = xgb.DMatrix(dataset)
     # Purify model
-    result = fa.fANOVA_2D(True, model, dataset, True, "old")
+    result = purify.fANOVA_2D(True, "gph_main", model, dataset)
     orig_model = result.original_model
     orig_x1_model = purify.get_filtered_model(orig_model, (0,))
     orig_x2_model = purify.get_filtered_model(orig_model, (1,))
@@ -1001,6 +569,160 @@ def plot_marginal(
 
 
 if __name__ == "__main__":
+
+    ##### test_vector_to_tree #####
+    if False:
+        # test 1
+        X_test = np.array([[5.0], [15.0], [25.0]])
+        dtest = xgb.DMatrix(X_test)
+        alpha_vector = np.array([1.0, 2.0, 3.0])  # leaf values for bins
+        split_condition_vector = np.array([10.0, 20.0])
+        true_prediction = np.array([1.0, 2.0, 3.0])
+        test_vector_to_tree(
+            alpha_vector, split_condition_vector, 0, dtest, true_prediction
+        )
+        # test 2
+        X_test = np.array([[1, 5.0], [1, 15.0], [1, 25.0], [1, 35.0]])
+        # X_test = np.array([[5.0], [15.0], [25.0], [35.0]])
+        dtest = xgb.DMatrix(X_test)
+        alpha_vector = np.array([1.0, 2.0, 3.0, 4.0])
+        split_condition_vector = np.array([10.0, 20.0, 30.0])
+        true_prediction = np.array([1.0, 2.0, 3.0, 4.0])
+        test_vector_to_tree(
+            alpha_vector, split_condition_vector, 1, dtest, true_prediction
+        )
+        # test 3
+        X_test = np.array([[1, 5.0], [1, 15.0], [1, 25.0], [1, 35.0], [1, 45.0]])
+        # X_test = np.array([[5.0], [15.0], [25.0], [35.0]])
+        dtest = xgb.DMatrix(X_test)
+        alpha_vector = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        split_condition_vector = np.array([10.0, 20.0, 30.0, 40.0])
+        true_prediction = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        test_vector_to_tree(
+            alpha_vector, split_condition_vector, 1, dtest, true_prediction
+        )
+
+    ##### test_grid_to_tree #####
+    if False:
+        # test one
+        split_condition_vector_x = np.array([10.0, 20.0])
+        split_condition_vector_y = np.array([10.0, 30.0])
+        grid_alphas = np.array(
+            [
+                [-300.0, -200.0, -100.0],
+                [-30.0, -20.0, -10.0],
+                [-3.0, -2.0, -1.0],
+            ]
+        )
+        feature_tuple = (0, 1)
+        X_test = np.array([[15, 5], [5, 25]])
+        dtest = xgb.DMatrix(X_test)
+        true_prediction = np.array([-30.0, -200.0])
+        test_grid_to_tree(
+            grid_alphas,
+            split_condition_vector_x,
+            split_condition_vector_y,
+            feature_tuple,
+            dtest,
+            true_prediction,
+        )
+
+        # test two
+        split_condition_vector_x = np.array([10.0, 20.0, 30.0, 40.0])
+        split_condition_vector_y = np.array([10.0, 20.0, 30.0])
+        grid_alphas = np.array(
+            [
+                [-40000, -30000, -20000, -10000],
+                [-4000, -3000, -2000, -1000],
+                [-400, -300, -200, -100],
+                [-40, -30, -20, -10],
+                [-4, -3, -2, -1],
+            ]
+        )
+        feature_tuple = (0, 1)
+        X_test = np.array([[15, 25], [100, 25]])
+        dtest = xgb.DMatrix(X_test)
+        true_prediction = np.array([-2000, -2])
+        test_grid_to_tree(
+            grid_alphas,
+            split_condition_vector_x,
+            split_condition_vector_y,
+            feature_tuple,
+            dtest,
+            true_prediction,
+        )
+
+        # test theee
+        split_condition_vector_x = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        split_condition_vector_y = np.array([15.0, 45.0])
+        grid_alphas = np.array(
+            [
+                [-300000, -200000, -100000],
+                [-30000, -20000, -10000],
+                [-3000, -2000, -1000],
+                [-300, -200, -100],
+                [-30, -20, -10],
+                [-3, -2, -1],
+            ]
+        )
+        feature_tuple = (0, 1)
+        X_test = np.array([[0, 20], [35, 50]])
+        dtest = xgb.DMatrix(X_test)
+        true_prediction = np.array([-200000, -100])
+        test_grid_to_tree(
+            grid_alphas,
+            split_condition_vector_x,
+            split_condition_vector_y,
+            feature_tuple,
+            dtest,
+            true_prediction,
+        )
+
+    ##### test_equal_predictions #####
+    if False:
+        n = 1 << 16
+        rho_val = 0  # 0, .5, .9, .999, 1
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.identity(2)
+        cov_mat[0, 1] = cov_mat[1, 0] = rho_val
+        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
+        y_true = yf(X[:, 0], X[:, 1])
+
+        np.random.seed(42)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_true, test_size=0.3, random_state=42
+        )
+
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtrain.save_binary("dtrain.buffer")
+        # dtrain = xgb.DMatrix("dtrain.buffer")
+        dtest = xgb.DMatrix(X_test, label=y_test)
+
+        if True:
+            params = {
+                "max_depth": 2,
+                "learning_rate": 1.0,
+                "objective": "reg:squarederror",
+                "random_state": 42,
+            }
+
+            model = xgb.train(
+                params=params,
+                dtrain=dtrain,
+                num_boost_round=10,  # Equivalent to n_estimators
+                evals=[(dtrain, "train"), (dtest, "test")],
+                verbose_eval=True,
+            )
+
+        test_equal_predictions(model, dtrain)
+        test_fANOVA_1(model, dtrain)
+        test_fANOVA_2(model, dtrain)
+        test_purity(model, dtrain)
+
+    ##### plot against theoretical #####
+
     # Generate correlated data
     seed = 42
     n = 1 << 14
@@ -1013,9 +735,7 @@ if __name__ == "__main__":
     y = yf(X[:, 0], X[:, 1])
 
     # train model
-    # dtrain = xgb.DMatrix(X, label=y)
-    # dtrain.save_binary("dtrain.buffer")
-    dtrain = xgb.DMatrix("dtrain.buffer")
+    dtrain = xgb.DMatrix(X, label=y)
     params = {
         "objective": "reg:squarederror",
         "seed": seed,
@@ -1023,9 +743,190 @@ if __name__ == "__main__":
         "eta": 0.1,
         "verbosity": 2,
     }
-    # model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
+    model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
 
-    # plot_diag(model, X)
-    # plot_pairwise(model, X, rho, b3)
-    model = purify.load_model_from_memory("loaded_models/old_original_model.json")
-    plot_marginal(model, dtrain, rho, b1, b2, b3)
+    plot_pairwise(model, X, rho, b3)
+    plot_marginal(model, X, rho, b1, b2, b3)
+
+    ##### OLD UNUSED STUFF #####
+    if False:
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        # Generate correlated data
+        X = np.random.multivariate_normal(mean=[0, 0], cov=cov_mat, size=n)
+        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+        y = yf(X[:, 0], X[:, 1])
+
+        # Theoretical purified interaction component
+        rho_over2 = rho / (1 + rho**2)
+        ref_x1x2 = lambda x: b3 * (
+            x[:, 0] * x[:, 1]
+            - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+            + rho_over2 * (1 - rho**2)
+        )
+
+        # Create evaluation grid along diagonal (x1 = x2)
+        gridn = 100
+        plot_range = (-1.5, 1.5)
+        x_vals = np.linspace(*plot_range, num=gridn)
+        diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
+
+        # Train XGBoost model
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,
+            "eta": 0.1,
+            "verbosity": 2,
+        }
+        model = xgb.train(
+            params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")]
+        )
+
+        # Purify the model
+        result = purify.fANOVA_2D(False, "gph", model, dtrain, True)
+
+        # Get predictions
+        diag_grid_dm = xgb.DMatrix(diag_grid)
+        pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
+        pred_orig = result.original_model.predict(diag_grid_dm)
+        true_pure = ref_x1x2(diag_grid)
+
+        original_model = result.original_model
+        original_model_x1x2 = purify.get_filtered_model(original_model, (0, 1))
+        pred_orig = original_model_x1x2.predict(diag_grid_dm)
+
+        # Create plot
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=pred_orig,
+                mode="lines",
+                name="Original Prediction",
+                line=dict(color="blue"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=pred_pure,
+                mode="lines",
+                name="Purified Prediction",
+                line=dict(color="green"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=true_pure,
+                mode="lines",
+                name="Reference",
+                line=dict(color="red", dash="dash"),
+            )
+        )
+
+        # Add error metrics to title
+        abs_error = np.abs(pred_pure - true_pure)
+        max_error = np.max(abs_error)
+        mean_error = np.mean(abs_error)
+
+        fig.update_layout(
+            title=f"Diagonal Comparison (x1 = x2)<br>Max Error: {max_error:.4f}, Mean Error: {mean_error:.4f}",
+            xaxis_title="x value (x1 = x2)",
+            yaxis_title="Interaction Component Value",
+            height=500,
+        )
+
+    if False:
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        DataType = "x1x2"
+        name = f"{DataType}_{rho:.2f}"
+
+        if DataType == "x1x2":
+            X = generate_x("gaussian", n, 2, seed=seed, cov_mat=cov_mat)
+            yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+            y = yf(X[:, 0], X[:, 1])
+
+            rho_over2 = rho / (1 + rho**2)
+            ref_x1x2 = lambda x: b3 * (
+                x[:, 0] * x[:, 1]
+                - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+                + rho_over2 * (1 - rho**2)
+            )
+            ref_x1x2_rho = lambda x: np.full(len(x), b3 * rho_over2 * (1 - rho**2))
+            ref_x1 = lambda x: b1 * x[:, 0] + b3 * rho_over2 * (x[:, 0] ** 2 - 1)
+            ref_x2 = lambda x: b2 * x[:, 1] + b3 * rho_over2 * (x[:, 1] ** 2 - 1)
+            ref_bias = b3 * rho
+
+        def plot_pairwise(x1_grid, puremodel, model_dict, ref_x1x2):
+            x1_grid_dm = xgb.DMatrix(x1_grid, enable_categorical=True)
+            # yyy, univ_contrib, biv_contrib = tuple(k.numpy() for k in puremodel.predict_batch_numerical(x1_grid)[:3])
+
+            biv_fig = go.Figure()
+            # biv_fig.add_trace(go.Scatter(x = x1_grid[:, 0], y = biv_contrib[0, :], mode = 'lines', name = 'puregam'))
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=model_dict[(0, 1)].predict(x1_grid_dm),
+                    mode="lines",
+                    name="Purified_xgb",
+                )
+            )
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=ref_x1x2(x1_grid),
+                    mode="lines",
+                    name="Ref formula",
+                )
+            )
+
+            biv_fig.show()
+            return biv_fig
+
+        gridn = 100
+        plot_start, plot_end = -1.5, 1.5
+        x1_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x2_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x1_mesh, x2_mesh = np.meshgrid(x1_vals, x2_vals)
+        x1_grid = np.column_stack([x1_mesh.ravel(), x2_mesh.ravel()])
+
+        # my stuff lol
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,  # moderate depth to avoid overfitting
+            "eta": 0.1,  # learning rate
+            "verbosity": 1,
+        }
+        model = new_model([tree], "10.0")
+        num_boost_round = 10000
+        model = xgb.train(params, dtrain, num_boost_round=num_boost_round)
+
+        X_train = np.array([[5, 2.5], [15, 20]])
+        dtrain = xgb.DMatrix(X_train)
+        original_prediction = model.predict(dtrain)
+        print(f"Original predictions: {original_prediction}")
+        result = purify.fANOVA_2D(True, "gph", model, dtrain, True)
+
+        split_x = np.array([10.0])
+        split_y = np.array([5.0, 15.0])
+        split_conditions_dict = {0: split_x, 1: split_y}
+        feature_tuple = (0, 1)
+        # end my stuff lol
+        plot_pairwise(x1_grid, model, result.purified_model_dict, ref_x1x2)
+        rho_grid = x1_grid.copy()
+        rho_grid[:, 1] *= rho
+        plot_pairwise(rho_grid, model, result.purified_model_dict, ref_x1x2_rho)
