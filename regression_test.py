@@ -128,6 +128,9 @@ def test_grid_to_tree(
 
 
 ##### MAIN TESTS #####
+
+
+# Purity
 def test_purity(model, dataset):
     # Run purification
     result = purify.fANOVA_2D(False, "purity", model, dataset)
@@ -243,6 +246,225 @@ def test_purity(model, dataset):
                 assert np.any(mean_vector_y > 1e-3) is True
 
 
+def plot_diag(model, dataset):
+    """
+    Args:
+        result (fANOVA_Result object):
+        dataset (dataframe)
+        rho_val (float between -1, 1).
+        yf (function)
+    """
+    # purify model
+    result = purify.fANOVA_2D(False, "gph_diag", model, xgb.DMatrix(dataset))
+
+    # theoretical purified interaction component
+    rho_over2 = rho / (1 + rho**2)
+    ref_x1x2 = lambda x: b3 * (
+        x[:, 0] * x[:, 1]
+        - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+        + rho_over2 * (1 - rho**2)
+    )
+
+    # Create evaluation grid along diagonal (x1 = x2)
+    gridn = 100
+    plot_range = (-1.5, 1.5)
+    x_vals = np.linspace(*plot_range, num=gridn)
+    diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
+
+    # Get predictions
+    diag_grid_dm = xgb.DMatrix(diag_grid)
+    pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
+    pred_orig = result.original_model.predict(diag_grid_dm)
+    true_pure = ref_x1x2(diag_grid)
+
+    original_model = result.original_model
+    original_model_x1x2 = purify.get_filtered_model(original_model, (0, 1))
+    pred_orig = original_model_x1x2.predict(diag_grid_dm)
+
+    # Create plot
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=pred_orig,
+            mode="lines",
+            name="Original Prediction",
+            line=dict(color="blue"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=pred_pure,
+            mode="lines",
+            name="Purified Prediction",
+            line=dict(color="green"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=true_pure,
+            mode="lines",
+            name="Reference",
+            line=dict(color="red", dash="dash"),
+        )
+    )
+
+    if False:
+        # Add error metrics to title
+        abs_error = np.abs(pred_pure - true_pure)
+        max_error = np.max(abs_error)
+        mean_error = np.mean(abs_error)
+
+    fig.update_layout(
+        title=f"Diagonal Comparison (x1 = x2)",
+        xaxis_title="x value (x1 = x2)",
+        yaxis_title="Interaction Component Value",
+        height=500,
+    )
+
+    fig.show()
+
+
+def plot_pairwise(
+    model, dataset, rho, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
+):
+    """
+    Generates two comparison plots:
+    1. Diagonal (x1 = x2) comparison
+    2. Correlation structure (x2 = rho*x1) comparison
+    """
+    # Purify model
+    result = purify.fANOVA_2D(False, "gph_diag", model, xgb.DMatrix(dataset))
+    orig_model = result.original_model
+    orig_filt_model = purify.get_filtered_model(orig_model, (0, 1))
+
+    # Theoretical components
+    rho_over2 = rho / (1 + rho**2)
+
+    # 1. Diagonal comparison components
+    def ref_diagonal(x):
+        """Theoretical interaction along diagonal (x1=x2)"""
+        return b3 * (x**2 - 2 * rho_over2 * x**2 + rho_over2 * (1 - rho**2))
+
+    # 2. Correlation structure components
+    def ref_correlation(x):
+        """Theoretical interaction along x2 = rho*x1"""
+        return np.full_like(x, b3 * rho_over2 * (1 - rho**2))
+
+    # Create evaluation grid
+    gridn = 100
+    x_vals = np.linspace(*plot_x_range, num=gridn)
+
+    # ===== Plot 1: Diagonal (x1 = x2) ===== #
+    diag_grid = np.column_stack([x_vals, x_vals])
+    diag_dm = xgb.DMatrix(diag_grid)
+
+    fig1 = go.Figure()
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(0, 1)].predict(diag_dm),
+            mode="lines",
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_diagonal(x_vals),
+            mode="lines",
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_filt_model.predict(diag_dm),
+            mode="lines",
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=np.full_like(x_vals, result.bias),
+            mode="lines",
+            name="bias",
+            line=dict(color="purple"),
+        )
+    )
+    fig1.update_layout(
+        title=f"Diagonal Comparison (x1 = x2). rho = {rho}, b3 = {b3}",
+        xaxis_title="x value",
+        yaxis_title="Interaction Component",
+        xaxis=dict(range=list(plot_x_range)),
+        yaxis=dict(range=list(plot_y_range)),
+    )
+    fig1.show()
+
+    # ===== Plot 2: Correlation Structure (x2 = rho*x1) =====
+    rho_grid = np.column_stack([x_vals, rho * x_vals])
+    rho_dm = xgb.DMatrix(rho_grid)
+
+    fig2 = go.Figure()
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(0, 1)].predict(rho_dm),
+            mode="lines",
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_correlation(x_vals),
+            mode="lines",
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_filt_model.predict(rho_dm),
+            mode="lines",
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=np.full_like(x_vals, result.bias),
+            mode="lines",
+            name="bias",
+            line=dict(color="purple"),
+        )
+    )
+    fig2.update_layout(
+        title=f"Correlation Structure (x2 = {rho:.2f}x1). rho = {rho}, b3 = {b3}",
+        xaxis_title="x1 value",
+        yaxis_title="Interaction Component",
+        xaxis=dict(range=list(plot_x_range)),
+        yaxis=dict(range=list(plot_y_range)),
+    )
+    fig2.show()
+
+    return fig1, fig2
+
+
+def plot_main():
+    pass
+
+
+# Equal Predictions
 def test_equal_predictions(model, dataset):
     original_prediction = model.predict(dataset)
     new_model = purify.purify_2D(model, dataset, True, "XYZ.json")
@@ -518,11 +740,36 @@ if __name__ == "__main__":
         rho_grid[:, 1] *= rho
         plot_pairwise(rho_grid, model, result.purified_model_dict, ref_x1x2_rho)
 
+    # Generate correlated data
+    seed = 42
+    n = 1 << 14
+    rho = 0.5
+    b1, b2, b3 = 3, 2, 10
+    cov_mat = np.array([[1, rho], [rho, 1]])
+
+    X = np.random.multivariate_normal(mean=[0, 0], cov=cov_mat, size=n)
+    yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+    y = yf(X[:, 0], X[:, 1])
+
+    # train model
+    dtrain = xgb.DMatrix(X, label=y)
+    params = {
+        "objective": "reg:squarederror",
+        "seed": seed,
+        "max_depth": 2,
+        "eta": 0.1,
+        "verbosity": 2,
+    }
+    model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
+
+    # plot_diag(model, X)
+    plot_pairwise(model, X, rho, b3)
+
     # modified test
-    if True:
+    if False:
         seed = 42
         n = 1 << 14
-        rho = -0.3
+        rho = 0.8
         b1, b2, b3 = 3, 2, 10
         cov_mat = np.array([[1, rho], [rho, 1]])
 
