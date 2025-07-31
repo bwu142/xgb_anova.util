@@ -1,6 +1,6 @@
 import numpy as np
 import purify
-import regression_test as rt
+import test as rt
 
 x = np.array([-10, 1, 5, 12])
 bins = np.array([0, 2, 4, 6, 8, 10])

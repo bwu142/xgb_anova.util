@@ -14,7 +14,7 @@ import filter
 import purify
 from sklearn.metrics import r2_score
 import pygam
-import purify_first_attempt as fa
+import zpurify_first_attempt as fa
 
 
 ##############################
