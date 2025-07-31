@@ -7,7 +7,6 @@ import xgboost as xgb
 import json
 import os
 import pandas as pd
-import regression_test as rt
 
 # SET PARAM BASE IS AN INPUT
 # LOAD THROUGH JSON AND ACTUALLY CHANGE BASE_SCORE KEY
@@ -982,41 +981,6 @@ def purify_one_feature(
 
         return mean_offset, alpha_tree
 
-    # trial one (mimics 2D)
-    if False:
-
-        def get_bin_means(current_vals, binned_indices, num_bins):
-            sum_vector = np.zeros(num_bins)
-            count_vector = np.zeros(num_bins)
-            np.add.at(sum_vector, binned_indices, current_vals)
-            np.add.at(count_vector, binned_indices, 1)
-
-            mean_vector = np.zeros(num_bins)  # (Bx x 1)
-            nonzero = count_vector > 0
-            mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
-            print("MEAN VECTOR", mean_vector)
-            return mean_vector
-
-        current_vals = vector_alpha[binned_indices] + predictions
-        bin_means = get_bin_means(current_vals, binned_indices, num_bins)
-        print("bin_means:", bin_means)
-
-        # i think the issue is here --> we always add the same mean_offset to our prediction, BUT, we subtract a different mean depending on the bin that the specific test point falls into
-        vector_alpha -= bin_means
-        mean_offset = 0.0
-        mean_offset += np.mean(bin_means)
-
-        alpha_tree = tree_from_vector(
-            vector_alpha, split_condition_vector, feature_tuple[0]
-        )
-        # print(
-        #     "purify_one_feature alpha_tree_predict",
-        #     rt.alpha_tree_predict(alpha_tree, dataset)[:5],
-        # )
-        # print("purify_one_feature mean_offset", mean_offset)
-
-        return mean_offset, alpha_tree
-
 
 def purify_2D(
     model,
@@ -1286,66 +1250,35 @@ def fANOVA_2D(
 
 
 if __name__ == "__main__":
-    # erm
-    if False:
-        n = 1 << 16
-        rho_val = 0  # 0, .5, .9, .999, 1
-        b1, b2, b3 = 3, 2, 10
-        cov_mat = np.identity(2)
-        cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-        X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-        y_true = yf(X[:, 0], X[:, 1])
+    # erm........
 
-        np.random.seed(42)
+    # Prepare data
+    df = pd.DataFrame(
+        {
+            "cat": ["A", "B", "A", "C"],
+            "num": [1.2, 3.4, 5.6, 7.8],
+            "label": [0, 1, 0, 1],
+        }
+    )
+    df["cat"] = df["cat"].astype("category")  # Important!
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_true, test_size=0.3, random_state=42
-        )
+    # Separate features/labels
+    X = df.drop("label", axis=1)
+    y = df["label"]
 
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dtrain.save_binary("dtrain.buffer")
-        # dtrain = xgb.DMatrix("dtrain.buffer")
-        dtest = xgb.DMatrix(X_test, label=y_test)
+    # Create DMatrix with categorical info preserved
+    dmatrix = xgb.DMatrix(X, label=y, enable_categorical=True)
 
-        if True:
-            params = {
-                "max_depth": 2,
-                "learning_rate": 1.0,
-                "objective": "reg:squarederror",
-                "random_state": 42,
-            }
+    # Define parameters
+    params = {
+        "tree_method": "hist",
+        "enable_categorical": True,
+        "objective": "binary:logistic",
+    }
 
-            model = xgb.train(
-                params=params,
-                dtrain=dtrain,
-                num_boost_round=100,  # Equivalent to n_estimators
-                evals=[(dtrain, "train"), (dtest, "test")],
-                verbose_eval=True,
-            )
+    # Train model
+    booster = xgb.train(params, dmatrix)
 
-        my_f = fANOVA_2D(False, model, dtrain, True, "test")
-        assert np.allclose(
-            my_f.purified_model.predict(dtrain),
-            my_f.original_model.predict(dtrain),
-            atol=1e-5,
-        )
-        print(my_f.original_model.predict(dtrain))
-        print(my_f.purified_model.predict(dtrain))
-        print(my_f.bias)
-
-        # assert fANOVA_2D
-
-        for feature_tuple, submodel in my_f.purified_model_dict.items():
-            print(submodel.predict(dtrain))
-
-    if False:
-        dtrain = xgb.DMatrix("dtrain.buffer")
-        my_f = fANOVA_2D(True, None, dtrain, True, "test")
-        print(my_f.original_model.predict(dtrain))
-        print(my_f.purified_model.predict(dtrain))
-        print(my_f.bias)
-
-        print("BREAK!!")
-        for model in my_f.purified_model_dict.values():
-            print(model.predict(dtrain))
+    # Make predictions
+    preds = booster.predict(dmatrix)
+    print(preds)
