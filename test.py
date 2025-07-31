@@ -762,14 +762,18 @@ def test_plot_all(
 
 
 ###### COMPARISONS ######
-def plot_pairwise(model, dataset, rho, b3, plot_range=(-1.5, 1.5)):
+def plot_pairwise(
+    model, dataset, rho, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
+):
     """
     Generates two comparison plots:
     1. Diagonal (x1 = x2) comparison
     2. Correlation structure (x2 = rho*x1) comparison
     """
+    if type(dataset) != xgb.DMatrix:
+        dataset = xgb.DMatrix(dataset)
     # Purify model
-    result = fa.fANOVA_2D(False, model, xgb.DMatrix(dataset), True, "old")
+    result = fa.fANOVA_2D(True, model, dataset, True, "old")
     orig_model = result.original_model
     orig_filt_model = purify.get_filtered_model(orig_model, (0, 1))
 
@@ -788,7 +792,7 @@ def plot_pairwise(model, dataset, rho, b3, plot_range=(-1.5, 1.5)):
 
     # Create evaluation grid
     gridn = 100
-    x_vals = np.linspace(*plot_range, num=gridn)
+    x_vals = np.linspace(*plot_x_range, num=gridn)
 
     # ===== Plot 1: Diagonal (x1 = x2) ===== #
     diag_grid = np.column_stack([x_vals, x_vals])
@@ -822,10 +826,21 @@ def plot_pairwise(model, dataset, rho, b3, plot_range=(-1.5, 1.5)):
             line=dict(color="red"),
         )
     )
+    fig1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=np.full_like(x_vals, result.bias),
+            mode="lines",
+            name="bias",
+            line=dict(color="purple"),
+        )
+    )
     fig1.update_layout(
-        title="Diagonal Comparison (x1 = x2)",
+        title=f"Diagonal Comparison (x1 = x2). rho = {rho}, b3 = {b3}",
         xaxis_title="x value",
         yaxis_title="Interaction Component",
+        xaxis=dict(range=list(plot_x_range)),
+        yaxis=dict(range=list(plot_y_range)),
     )
     fig1.show()
 
@@ -852,7 +867,7 @@ def plot_pairwise(model, dataset, rho, b3, plot_range=(-1.5, 1.5)):
             line=dict(color="green", dash="dash"),
         )
     )
-    fig1.add_trace(
+    fig2.add_trace(
         go.Scatter(
             x=x_vals,
             y=orig_filt_model.predict(rho_dm),
@@ -861,201 +876,131 @@ def plot_pairwise(model, dataset, rho, b3, plot_range=(-1.5, 1.5)):
             line=dict(color="red"),
         )
     )
+    fig2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=np.full_like(x_vals, result.bias),
+            mode="lines",
+            name="bias",
+            line=dict(color="purple"),
+        )
+    )
     fig2.update_layout(
-        title=f"Correlation Structure (x2 = {rho:.2f}x1)",
+        title=f"Correlation Structure (x2 = {rho:.2f}x1). rho = {rho}, b3 = {b3}",
         xaxis_title="x1 value",
         yaxis_title="Interaction Component",
+        xaxis=dict(range=list(plot_x_range)),
+        yaxis=dict(range=list(plot_y_range)),
     )
     fig2.show()
 
     return fig1, fig2
 
 
+def plot_marginal(
+    model, dataset, rho, b1, b2, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
+):
+    """
+    Complete marginal effect analysis for both features.
+    """
+    if type(dataset) != xgb.DMatrix:
+        dataset = xgb.DMatrix(dataset)
+    # Purify model
+    result = fa.fANOVA_2D(True, model, dataset, True, "old")
+    orig_model = result.original_model
+    orig_x1_model = purify.get_filtered_model(orig_model, (0,))
+    orig_x2_model = purify.get_filtered_model(orig_model, (1,))
+
+    # Theoretical term
+    rho_term = rho / (1 + rho**2)
+
+    # Create evaluation grid
+    gridn = 100
+    x_vals = np.linspace(*plot_x_range, num=gridn)
+
+    # ---- Plot 1: Marginal Effect of x1 (x2=0) ----
+    x1_grid = np.column_stack([x_vals, np.zeros_like(x_vals)])
+    x1_dm = xgb.DMatrix(x1_grid)
+
+    def ref_x1(x):
+        return b1 * x + b3 * rho_term * (x**2 - 1)
+
+    fig_x1 = go.Figure()
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(0,)].predict(x1_dm),
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_x1_model.predict(x1_dm),
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_x1(x_vals),
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig_x1.update_layout(
+        title=f"Marginal Effect of x1 (x2=0) | ρ={rho:.2f}",
+        xaxis_title="x1 value",
+        yaxis=dict(range=plot_y_range),
+    )
+
+    fig_x1.show()
+    # ---- Plot 2: Marginal Effect of x2 (x1=0) ----
+    x2_grid = np.column_stack([np.zeros_like(x_vals), x_vals])
+    x2_dm = xgb.DMatrix(x2_grid)
+
+    def ref_x2(x):
+        return b2 * x + b3 * rho_term * (x**2 - 1)
+
+    fig_x2 = go.Figure()
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(1,)].predict(x2_dm),
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_x2_model.predict(x2_dm),
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_x2(x_vals),
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig_x2.update_layout(
+        title=f"Marginal Effect of x2 (x1=0) | ρ={rho:.2f}",
+        xaxis_title="x2 value",
+        yaxis=dict(range=plot_y_range),
+    )
+
+    fig_x2.show()
+
+    return fig_x1, fig_x2
+
+
 if __name__ == "__main__":
-    # # TEST 1
-    # n = 1 << 16
-    # rho_val = 0  # 0, .5, .9, .999, 1
-    # b1, b2, b3 = 3, 2, 10
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    # yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-    # y_true = yf(X[:, 0], X[:, 1])
-
-    # test_equal_predictions(X, y_true)
-    # test_independence(X, y_true)
-    # test_purified_mean_zero(X, y_true, 0.001, 0) # works for all!
-    # test_purity(X, y_true)
-    # test_plot_1(X, y_true)
-    # test_plot_all(X, y_true, 0.05, 0, -3, 3, -2, 2)
-
-    # # TEST 2
-    # # Parameters
-    # n = 1 << 16
-    # rho_val = 0  # Correlation between x1 and x2
-
-    # # Covariance matrix for bivariate normal
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-
-    # # Generate standard bivariate normal data
-    # X_raw = np.random.multivariate_normal(mean=np.zeros(2), cov=cov_mat, size=n)
-
-    # # Shift both x1 and x2 to ensure x1 * x2 > 0
-    # shift = 5.0  # Empirically safe for most values to ensure product > 0
-    # X = X_raw + shift
-
-    # # Calculate target: y = 2 + log(x1 * x2)
-    # product = X[:, 0] * X[:, 1]
-    # assert np.all(product > 0), "Some x1 * x2 values are not positive!"
-
-    # y_true = 2 + np.log(product)
-
-    # test_equal_predictions(X, y_true)
-    # test_independence(X, y_true)
-    # test_purified_mean_zero(X, y_true, 0.0001, 0)
-    # test_purity(X, y_true)
-    # test_plot_1(X, y_true)
-    # test_plot_all(X, y_true, 0.5, 5)
-
-    # # TEST 3
-    # n = 1 << 18  # number of data points
-    # rho_val = 0  # correlation between x1 and x2 (can try 0, 0.5, 1.0)
-    # b1, b2, b3 = 3.0, 2.0, 10.0  # coefficients
-
-    # # Covariance matrix
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho_val
-
-    # # Sample from multivariate normal
-    # X = np.random.multivariate_normal(np.zeros(2), cov_mat, size=n)
-    # x1, x2 = X[:, 0], X[:, 1]
-
-    # # Define target
-    # y_true = b1 * x1 + b2 * x2 + b3 * x1 * x2 + 2
-
-    # test_equal_predictions(X, y_true)
-    # test_independence(X, y_true)
-    # test_purified_mean_zero(X, y_true, 0.001, 0)
-    # test_purity(X, y_true)
-    # test_plot_1(X, y_true)
-    # test_plot_all(X, y_true, 0.05, 0, -2, 2, -2, 2)
-
-    ####### TESTS NOW ######
-    # seed = 42
-    # n = 1 << 16
-    # rho = 0.5
-    # b1, b2, b3 = 3, 2, 10
-    # cov_mat = np.identity(2)
-    # cov_mat[0, 1] = cov_mat[1, 0] = rho
-    # DataType = "x1x2"
-
-    # if DataType == "x1x2":
-    #     np.random.seed(seed)
-    #     X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    #     yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
-    #     y = yf(X[:, 0], X[:, 1])
-    #     plot_start, plot_end = -1.5, 1.5
-    #     Num_identity = 0
-    # elif DataType == "x1x2L":
-    #     np.random.seed(seed)
-    #     X = np.random.multivariate_normal(np.zeros(2), cov_mat, n)
-    #     yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3
-    #     y = yf(X[:, 0], X[:, 1])
-    #     plot_start, plot_end = -1.5
-    #     Num_identity = 0
-    # elif DataType == "x1x2x3":
-    #     np.random.seed(seed)
-    #     cov_mat3 = np.full((3, 3), rho)
-    #     np.fill_diagonal(cov_mat3, 1)
-
-    # model, dtrain, dtest = setup_model(X, y, 100)
-    # my_f = purify.fANOVA_2D(False, model, dtrain, True, "test_py")
-    # x_vals = np.linspace(-1.5, 1.5, 200)
-    # plot_components_ben(my_f.purified_model_dict, (0,), x_vals, yf)
-
-    if False:
-        seed = 42
-        n = 1 << 14
-        rho = 0  # 0, -.3, .7
-        b1, b2, b3 = 3, 2, 10
-        cov_mat = np.array([[1, rho], [rho, 1]])
-
-        # Generate correlated data
-        X = np.random.multivariate_normal(mean=[0, 0], cov=cov_mat, size=n)
-        yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
-        y = yf(X[:, 0], X[:, 1])
-
-        # Theoretical purified interaction component
-        rho_over2 = rho / (1 + rho**2)
-        ref_x1x2 = lambda x: b3 * (
-            x[:, 0] * x[:, 1]
-            - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
-            + rho_over2 * (1 - rho**2)
-        )
-
-        # Create evaluation grid along diagonal (x1 = x2)
-        gridn = 100
-        plot_range = (-1.5, 1.5)
-        x_vals = np.linspace(*plot_range, num=gridn)
-        diag_grid = np.column_stack([x_vals, x_vals])  # x1 = x2
-
-        # Train XGBoost model
-        dtrain = xgb.DMatrix(X, label=y)
-        params = {
-            "objective": "reg:squarederror",
-            "seed": seed,
-            "max_depth": 2,
-            "eta": 0.1,
-            "verbosity": 2,
-        }
-        model = xgb.train(
-            params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")]
-        )
-
-        # Purify the model
-        result = fa.fANOVA_2D(True, model, dtrain, True, "fa")
-
-        # Get predictions
-        diag_grid_dm = xgb.DMatrix(diag_grid)
-        pred_pure = result.purified_model_dict[(0, 1)].predict(diag_grid_dm)
-        true_pure = ref_x1x2(diag_grid)
-
-        # Create plot
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=x_vals,
-                y=pred_pure,
-                mode="lines",
-                name="Purified prediction",
-                line=dict(color="blue"),
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=x_vals,
-                y=true_pure,
-                mode="lines",
-                name="Reference",
-                line=dict(color="red", dash="dash"),
-            )
-        )
-
-        # Add error metrics to title
-        abs_error = np.abs(pred_pure - true_pure)
-        max_error = np.max(abs_error)
-        mean_error = np.mean(abs_error)
-
-        fig.update_layout(
-            title=f"Diagonal Comparison (x1 = x2)<br>Max Error: {max_error:.4f}, Mean Error: {mean_error:.4f}",
-            xaxis_title="x value (x1 = x2)",
-            yaxis_title="Interaction Component Value",
-            height=500,
-        )
-
-        fig.show()
-
     # Generate correlated data
     seed = 42
     n = 1 << 14
@@ -1068,7 +1013,9 @@ if __name__ == "__main__":
     y = yf(X[:, 0], X[:, 1])
 
     # train model
-    dtrain = xgb.DMatrix(X, label=y)
+    # dtrain = xgb.DMatrix(X, label=y)
+    # dtrain.save_binary("dtrain.buffer")
+    dtrain = xgb.DMatrix("dtrain.buffer")
     params = {
         "objective": "reg:squarederror",
         "seed": seed,
@@ -1076,7 +1023,9 @@ if __name__ == "__main__":
         "eta": 0.1,
         "verbosity": 2,
     }
-    model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
+    # model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
 
     # plot_diag(model, X)
-    plot_pairwise(model, X, rho, b3)
+    # plot_pairwise(model, X, rho, b3)
+    model = purify.load_model_from_memory("loaded_models/old_original_model.json")
+    plot_marginal(model, dtrain, rho, b1, b2, b3)

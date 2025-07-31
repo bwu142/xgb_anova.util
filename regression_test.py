@@ -65,39 +65,6 @@ def alpha_tree_predict(alpha_tree, dataset):
     return prediction
 
 
-def generate_x(dist_type, n, d, seed=None, cov_mat=None):
-    """
-    Generate n samples of dimension d from a specified distribution type.
-
-    Parameters:
-    - dist_type : str : type of distribution, e.g. "gaussian"
-    - n         : int : number of samples
-    - d         : int : dimension of each sample
-    - seed      : int or None : random seed for reproducibility (default None)
-    - cov_mat   : ndarray or None : covariance matrix for gaussian (d x d), default is identity
-
-    Returns:
-    - X : ndarray of shape (n, d) samples
-    """
-    if seed is not None:
-        np.random.seed(seed)
-
-    if dist_type == "gaussian":
-        mean = np.zeros(d)
-        if cov_mat is None:
-            cov_mat = np.eye(d)  # default to identity if no covariance matrix provided
-        samples = np.random.multivariate_normal(mean, cov_mat, n)
-        return samples
-    else:
-        raise ValueError(f"Distribution type '{dist_type}' is not implemented.")
-
-
-# Example usage:
-# cov_mat = [[1, 0.5], [0.5, 1]]
-# seed = 42
-# X = generate_x("gaussian", 2**14, 2, seed=seed, cov_mat=cov_mat)
-
-
 ##### HELPER FUNCTION TESTS #####
 def test_vector_to_tree(
     alpha_vector, split_condition_vector, feature_index, dataset, true_prediction
@@ -127,10 +94,7 @@ def test_grid_to_tree(
     assert np.allclose(test_model_prediction, true_prediction, atol=1e-4, rtol=0.0)
 
 
-##### MAIN TESTS #####
-
-
-# Purity
+##### UNUSED TESTS #####
 def test_purity(model, dataset):
     # Run purification
     result = purify.fANOVA_2D(False, "purity", model, dataset)
@@ -327,6 +291,45 @@ def plot_diag(model, dataset):
     fig.show()
 
 
+##### MAIN TESTS #####
+
+
+# Equal Predictions
+def test_equal_predictions(model, dataset):
+    original_prediction = model.predict(dataset)
+    new_model = purify.purify_2D(model, dataset, True, "XYZ.json")
+    purified_prediction = new_model.predict(dataset)
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {purified_prediction[:5]}")
+    assert np.allclose(original_prediction, purified_prediction, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_1(model, dataset):
+    result = purify.fANOVA_2D(False, "test", model, dataset, True)
+    dataset.save_binary("dataset.buffer")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+
+
+def test_fANOVA_2(model, dataset):
+    result = purify.fANOVA_2D(True, "test")
+    submodel_sum = result.bias
+    for submodel in result.purified_model_dict.values():
+        submodel_sum += submodel.predict(dataset)
+    original_prediction = result.predict_original(dataset)
+
+    print(f"original prediction: {original_prediction[:5]}")
+    print(f"purified prediction: {submodel_sum[:5]}")
+    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+
+
+# Plot Comparisons
 def plot_pairwise(
     model, dataset, rho, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
 ):
@@ -335,8 +338,10 @@ def plot_pairwise(
     1. Diagonal (x1 = x2) comparison
     2. Correlation structure (x2 = rho*x1) comparison
     """
+    if type(dataset) != xgb.DMatrix:
+        dataset = xgb.DMatrix(dataset)
     # Purify model
-    result = purify.fANOVA_2D(False, "gph_diag", model, xgb.DMatrix(dataset))
+    result = purify.fANOVA_2D(False, "gph_pair", model, dataset)
     orig_model = result.original_model
     orig_filt_model = purify.get_filtered_model(orig_model, (0, 1))
 
@@ -460,43 +465,107 @@ def plot_pairwise(
     return fig1, fig2
 
 
-def plot_main():
-    pass
+def plot_marginal(
+    model, dataset, rho, b1, b2, b3, plot_x_range=(-1.5, 1.5), plot_y_range=(-5, 30)
+):
+    """
+    Complete marginal effect analysis for both features.
+    """
+    if type(dataset) != xgb.DMatrix:
+        dataset = xgb.DMatrix(dataset)
+    # Purify model
+    result = purify.fANOVA_2D(True, "gph_main", model, dataset)
+    orig_model = result.original_model
+    orig_x1_model = purify.get_filtered_model(orig_model, (0,))
+    orig_x2_model = purify.get_filtered_model(orig_model, (1,))
 
+    # Theoretical term
+    rho_term = rho / (1 + rho**2)
 
-# Equal Predictions
-def test_equal_predictions(model, dataset):
-    original_prediction = model.predict(dataset)
-    new_model = purify.purify_2D(model, dataset, True, "XYZ.json")
-    purified_prediction = new_model.predict(dataset)
-    print(f"original prediction: {original_prediction[:5]}")
-    print(f"purified prediction: {purified_prediction[:5]}")
-    assert np.allclose(original_prediction, purified_prediction, atol=1e-3, rtol=0.0)
+    # Create evaluation grid
+    gridn = 100
+    x_vals = np.linspace(*plot_x_range, num=gridn)
 
+    # ---- Plot 1: Marginal Effect of x1 (x2=0) ----
+    x1_grid = np.column_stack([x_vals, np.zeros_like(x_vals)])
+    x1_dm = xgb.DMatrix(x1_grid)
 
-def test_fANOVA_1(model, dataset):
-    result = purify.fANOVA_2D(False, "test", model, dataset, True)
-    dataset.save_binary("dataset.buffer")
-    submodel_sum = result.bias
-    for submodel in result.purified_model_dict.values():
-        submodel_sum += submodel.predict(dataset)
-    original_prediction = result.predict_original(dataset)
+    def ref_x1(x):
+        return b1 * x + b3 * rho_term * (x**2 - 1)
 
-    print(f"original prediction: {original_prediction[:5]}")
-    print(f"purified prediction: {submodel_sum[:5]}")
-    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+    fig_x1 = go.Figure()
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(0,)].predict(x1_dm),
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_x1_model.predict(x1_dm),
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig_x1.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_x1(x_vals),
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig_x1.update_layout(
+        title=f"Marginal Effect of x1 (x2=0) | ρ={rho:.2f}",
+        xaxis_title="x1 value",
+        yaxis=dict(range=plot_y_range),
+    )
 
+    fig_x1.show()
+    # ---- Plot 2: Marginal Effect of x2 (x1=0) ----
+    x2_grid = np.column_stack([np.zeros_like(x_vals), x_vals])
+    x2_dm = xgb.DMatrix(x2_grid)
 
-def test_fANOVA_2(model, dataset):
-    result = purify.fANOVA_2D(True, "test")
-    submodel_sum = result.bias
-    for submodel in result.purified_model_dict.values():
-        submodel_sum += submodel.predict(dataset)
-    original_prediction = result.predict_original(dataset)
+    def ref_x2(x):
+        return b2 * x + b3 * rho_term * (x**2 - 1)
 
-    print(f"original prediction: {original_prediction[:5]}")
-    print(f"purified prediction: {submodel_sum[:5]}")
-    assert np.allclose(original_prediction, submodel_sum, atol=1e-3, rtol=0.0)
+    fig_x2 = go.Figure()
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=result.purified_model_dict[(1,)].predict(x2_dm),
+            name="Purified",
+            line=dict(color="blue"),
+        )
+    )
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=orig_x2_model.predict(x2_dm),
+            name="Original (Unpurified)",
+            line=dict(color="red"),
+        )
+    )
+    fig_x2.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=ref_x2(x_vals),
+            name="Theoretical",
+            line=dict(color="green", dash="dash"),
+        )
+    )
+    fig_x2.update_layout(
+        title=f"Marginal Effect of x2 (x1=0) | ρ={rho:.2f}",
+        xaxis_title="x2 value",
+        yaxis=dict(range=plot_y_range),
+    )
+
+    fig_x2.show()
+
+    return fig_x1, fig_x2
 
 
 if __name__ == "__main__":
@@ -609,12 +678,6 @@ if __name__ == "__main__":
             true_prediction,
         )
 
-    ##### test_purify_two_features #####
-
-    ##### test_purify_one_features #####
-
-    ##### test_purity #####
-
     ##### test_equal_predictions #####
     if False:
         n = 1 << 16
@@ -660,86 +723,6 @@ if __name__ == "__main__":
 
     ##### plot against theoretical #####
 
-    # ben's original test
-    if False:
-        seed = 42
-        n = 1 << 14
-        rho = -0.3
-        b1, b2, b3 = 3, 2, 10
-        cov_mat = np.array([[1, rho], [rho, 1]])
-
-        DataType = "x1x2"
-        name = f"{DataType}_{rho:.2f}"
-
-        if DataType == "x1x2":
-            X = generate_x("gaussian", n, 2, seed=seed, cov_mat=cov_mat)
-            yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
-            y = yf(X[:, 0], X[:, 1])
-
-            rho_over2 = rho / (1 + rho**2)
-            ref_x1x2 = lambda x: b3 * (
-                x[:, 0] * x[:, 1]
-                - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
-                + rho_over2 * (1 - rho**2)
-            )
-            ref_x1x2_rho = lambda x: np.full(len(x), b3 * rho_over2 * (1 - rho**2))
-            ref_x1 = lambda x: b1 * x[:, 0] + b3 * rho_over2 * (x[:, 0] ** 2 - 1)
-            ref_x2 = lambda x: b2 * x[:, 1] + b3 * rho_over2 * (x[:, 1] ** 2 - 1)
-            ref_bias = b3 * rho
-
-        def plot_pairwise(x1_grid, puremodel, model_dict, ref_x1x2):
-            x1_grid_dm = xgb.DMatrix(x1_grid, enable_categorical=True)
-            # yyy, univ_contrib, biv_contrib = tuple(k.numpy() for k in puremodel.predict_batch_numerical(x1_grid)[:3])
-
-            biv_fig = go.Figure()
-            # biv_fig.add_trace(go.Scatter(x = x1_grid[:, 0], y = biv_contrib[0, :], mode = 'lines', name = 'puregam'))
-            biv_fig.add_trace(
-                go.Scatter(
-                    x=x1_grid[:, 0],
-                    y=model_dict[(0, 1)].predict(x1_grid_dm),
-                    mode="lines",
-                    name="Purified_xgb",
-                )
-            )
-            biv_fig.add_trace(
-                go.Scatter(
-                    x=x1_grid[:, 0],
-                    y=ref_x1x2(x1_grid),
-                    mode="lines",
-                    name="Ref formula",
-                )
-            )
-
-            biv_fig.show()
-            return biv_fig
-
-        gridn = 100
-        plot_start, plot_end = -1.5, 1.5
-        x1_vals = np.linspace(plot_start, plot_end, num=gridn)
-        x2_vals = np.linspace(plot_start, plot_end, num=gridn)
-        x1_mesh, x2_mesh = np.meshgrid(x1_vals, x2_vals)
-        x1_grid = np.column_stack([x1_mesh.ravel(), x2_mesh.ravel()])
-
-        # my stuff lol
-        dtrain = xgb.DMatrix(X, label=y)
-        params = {
-            "objective": "reg:squarederror",
-            "seed": seed,
-            "max_depth": 2,  # moderate depth to avoid overfitting
-            "eta": 0.1,  # learning rate
-            "verbosity": 1,
-        }
-        num_boost_round = 10000
-        model = xgb.train(params, dtrain, num_boost_round=num_boost_round)
-
-        result = purify.fANOVA_2D(True, "gph", model, dtrain, True)
-
-        # end my stuff lol
-        plot_pairwise(x1_grid, model, result.purified_model_dict, ref_x1x2)
-        rho_grid = x1_grid.copy()
-        rho_grid[:, 1] *= rho
-        plot_pairwise(rho_grid, model, result.purified_model_dict, ref_x1x2_rho)
-
     # Generate correlated data
     seed = 42
     n = 1 << 14
@@ -762,14 +745,14 @@ if __name__ == "__main__":
     }
     model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
 
-    # plot_diag(model, X)
     plot_pairwise(model, X, rho, b3)
+    plot_marginal(model, X, rho, b1, b2, b3)
 
-    # modified test
+    ##### OLD UNUSED STUFF #####
     if False:
         seed = 42
         n = 1 << 14
-        rho = 0.8
+        rho = -0.3
         b1, b2, b3 = 3, 2, 10
         cov_mat = np.array([[1, rho], [rho, 1]])
 
@@ -860,4 +843,90 @@ if __name__ == "__main__":
             height=500,
         )
 
-        fig.show()
+    if False:
+        seed = 42
+        n = 1 << 14
+        rho = -0.3
+        b1, b2, b3 = 3, 2, 10
+        cov_mat = np.array([[1, rho], [rho, 1]])
+
+        DataType = "x1x2"
+        name = f"{DataType}_{rho:.2f}"
+
+        if DataType == "x1x2":
+            X = generate_x("gaussian", n, 2, seed=seed, cov_mat=cov_mat)
+            yf = lambda x1, x2: b1 * x1 + b2 * x2 + b3 * x1 * x2
+            y = yf(X[:, 0], X[:, 1])
+
+            rho_over2 = rho / (1 + rho**2)
+            ref_x1x2 = lambda x: b3 * (
+                x[:, 0] * x[:, 1]
+                - rho_over2 * (x[:, 0] ** 2 + x[:, 1] ** 2)
+                + rho_over2 * (1 - rho**2)
+            )
+            ref_x1x2_rho = lambda x: np.full(len(x), b3 * rho_over2 * (1 - rho**2))
+            ref_x1 = lambda x: b1 * x[:, 0] + b3 * rho_over2 * (x[:, 0] ** 2 - 1)
+            ref_x2 = lambda x: b2 * x[:, 1] + b3 * rho_over2 * (x[:, 1] ** 2 - 1)
+            ref_bias = b3 * rho
+
+        def plot_pairwise(x1_grid, puremodel, model_dict, ref_x1x2):
+            x1_grid_dm = xgb.DMatrix(x1_grid, enable_categorical=True)
+            # yyy, univ_contrib, biv_contrib = tuple(k.numpy() for k in puremodel.predict_batch_numerical(x1_grid)[:3])
+
+            biv_fig = go.Figure()
+            # biv_fig.add_trace(go.Scatter(x = x1_grid[:, 0], y = biv_contrib[0, :], mode = 'lines', name = 'puregam'))
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=model_dict[(0, 1)].predict(x1_grid_dm),
+                    mode="lines",
+                    name="Purified_xgb",
+                )
+            )
+            biv_fig.add_trace(
+                go.Scatter(
+                    x=x1_grid[:, 0],
+                    y=ref_x1x2(x1_grid),
+                    mode="lines",
+                    name="Ref formula",
+                )
+            )
+
+            biv_fig.show()
+            return biv_fig
+
+        gridn = 100
+        plot_start, plot_end = -1.5, 1.5
+        x1_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x2_vals = np.linspace(plot_start, plot_end, num=gridn)
+        x1_mesh, x2_mesh = np.meshgrid(x1_vals, x2_vals)
+        x1_grid = np.column_stack([x1_mesh.ravel(), x2_mesh.ravel()])
+
+        # my stuff lol
+        dtrain = xgb.DMatrix(X, label=y)
+        params = {
+            "objective": "reg:squarederror",
+            "seed": seed,
+            "max_depth": 2,  # moderate depth to avoid overfitting
+            "eta": 0.1,  # learning rate
+            "verbosity": 1,
+        }
+        model = new_model([tree], "10.0")
+        num_boost_round = 10000
+        model = xgb.train(params, dtrain, num_boost_round=num_boost_round)
+
+        X_train = np.array([[5, 2.5], [15, 20]])
+        dtrain = xgb.DMatrix(X_train)
+        original_prediction = model.predict(dtrain)
+        print(f"Original predictions: {original_prediction}")
+        result = purify.fANOVA_2D(True, "gph", model, dtrain, True)
+
+        split_x = np.array([10.0])
+        split_y = np.array([5.0, 15.0])
+        split_conditions_dict = {0: split_x, 1: split_y}
+        feature_tuple = (0, 1)
+        # end my stuff lol
+        plot_pairwise(x1_grid, model, result.purified_model_dict, ref_x1x2)
+        rho_grid = x1_grid.copy()
+        rho_grid[:, 1] *= rho
+        plot_pairwise(rho_grid, model, result.purified_model_dict, ref_x1x2_rho)

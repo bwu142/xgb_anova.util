@@ -1196,7 +1196,7 @@ if __name__ == "__main__":
                 verbose_eval=True,
             )
 
-        my_f = fANOVA_2D(False, model, dtrain, True, "test")
+        my_f = fANOVA_2D(True, model, dtrain, True, "test")
         assert np.allclose(
             my_f.purified_model.predict(dtrain),
             my_f.original_model.predict(dtrain),
