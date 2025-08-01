@@ -474,7 +474,7 @@ def plot_marginal(
     if type(dataset) != xgb.DMatrix:
         dataset = xgb.DMatrix(dataset)
     # Purify model
-    result = purify.fANOVA_2D(True, "gph_main", model, dataset)
+    result = purify.fANOVA_2D(False, "gph_main", model, dataset)
     orig_model = result.original_model
     orig_x1_model = purify.get_filtered_model(orig_model, (0,))
     orig_x2_model = purify.get_filtered_model(orig_model, (1,))
@@ -725,7 +725,7 @@ if __name__ == "__main__":
 
     # Generate correlated data
     seed = 42
-    n = 1 << 14
+    n = 1 << 16
     rho = 0.5
     b1, b2, b3 = 3, 2, 10
     cov_mat = np.array([[1, rho], [rho, 1]])

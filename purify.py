@@ -1252,33 +1252,192 @@ def fANOVA_2D(
 if __name__ == "__main__":
     # erm........
 
-    # Prepare data
-    df = pd.DataFrame(
-        {
-            "cat": ["A", "B", "A", "C"],
-            "num": [1.2, 3.4, 5.6, 7.8],
-            "label": [0, 1, 0, 1],
+    # categorical inspection
+    if False:
+        # 1. Generate synthetic data with 10,000 samples
+        np.random.seed(42)
+        n_samples = 10000
+
+        # Categorical feature: random choice from 5 categories
+        cat_choices = ["A", "B", "C", "D", "E"]
+        cat_data = np.random.choice(cat_choices, n_samples)
+
+        # Numeric feature: random floats
+        num_data = np.random.rand(n_samples) * 100
+
+        # Binary target (e.g. 0/1) with some pattern depending on cat and num
+        labels = (cat_data == "A").astype(int) | (num_data > 50).astype(int)
+        # Build DataFrame
+        df = pd.DataFrame({"cat": cat_data, "num": num_data, "label": labels})
+
+        # --- Model 1: Categorical feature only ---
+
+        df_cat = df[["cat", "label"]].copy()
+        df_cat["cat"] = df_cat["cat"].astype("category")
+
+        dtrain_cat = xgb.DMatrix(
+            df_cat[["cat"]], label=df_cat["label"], enable_categorical=True
+        )
+
+        params_cat = {
+            "objective": "binary:logistic",
+            "tree_method": "hist",
+            "enable_categorical": True,
+            "max_depth": 2,
+            "seed": 42,
+            "verbosity": 1,
         }
-    )
-    df["cat"] = df["cat"].astype("category")  # Important!
 
-    # Separate features/labels
-    X = df.drop("label", axis=1)
-    y = df["label"]
+        num_boost_round = 1000
 
-    # Create DMatrix with categorical info preserved
-    dmatrix = xgb.DMatrix(X, label=y, enable_categorical=True)
+        model_cat = xgb.train(params_cat, dtrain_cat, num_boost_round=num_boost_round)
 
-    # Define parameters
-    params = {
-        "tree_method": "hist",
-        "enable_categorical": True,
-        "objective": "binary:logistic",
-    }
+        # --- Model 2: Numeric feature only ---
 
-    # Train model
-    booster = xgb.train(params, dmatrix)
+        df_num = df[["num", "label"]].copy()
 
-    # Make predictions
-    preds = booster.predict(dmatrix)
-    print(preds)
+        dtrain_num = xgb.DMatrix(df_num[["num"]], label=df_num["label"])
+
+        params_num = {
+            "objective": "binary:logistic",
+            "tree_method": "hist",
+            "max_depth": 2,
+            "seed": 42,
+            "verbosity": 1,
+        }
+
+        model_num = xgb.train(params_num, dtrain_num, num_boost_round=num_boost_round)
+
+        model_file = get_model_file(model_cat, True, "categorical_one.json")
+        model_file = get_model_file(model_num, True, "categorical_two.json")
+
+    # lei's example
+    if True:
+        np.random.seed(42)
+        n = 50000
+        grades = np.random.choice([1, 2, 3, 4], size=n)
+        ltv = np.random.normal(loc=130, scale=15, size=n)
+        error = np.random.normal(loc=0, scale=0.5, size=n)
+        loss = []
+        for g, l, e in zip(grades, ltv, error):
+            if g == 1:
+                val = max(10 + 0 * l + e, 0)
+            elif g == 2:
+                val = max(12 - 0.2 * (l - 130) + e, 0)
+            elif g == 3:
+                val = max(15 - 0.3 * (l - 130) + e, 0)
+            elif g == 4:
+                val = max(20 - 0.6 * (l - 130) + e, 0)
+            loss.append(val)
+
+        df = pd.DataFrame({"grade": grades, "ltv": ltv, "loss": loss})
+        # print(df)
+        X = df[["grade", "ltv"]].values
+        # print(X)
+        y = df["loss"].values
+
+    # deepseek LOL
+    if False:
+        # --- 2. Split Data into Train/Validation Sets (DMatrix format) ---
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        # Original model --> enable_categorical = False
+        if True:
+            # Convert data into DMatrix (optimized XGBoost data structure)
+            dtrain = xgb.DMatrix(X_train, label=y_train)
+            dtest = xgb.DMatrix(X_test, label=y_test)
+
+            # --- 3. Define Parameters for Booster ---
+            params = {
+                "objective": "reg:squarederror",  # Regression task
+                "max_depth": 2,  # Tree depth
+                "eta": 0.1,  # Learning rate (same as learning_rate in sklearn)
+                "subsample": 0.8,  # Fraction of samples used per tree
+                "colsample_bytree": 0.8,  # Fraction of features used per tree
+                "seed": 42,  # Random seed
+            }
+
+            # --- 4. Train the Booster Object ---
+            num_rounds = 100  # Number of boosting rounds
+            model_normal = xgb.train(
+                params,
+                dtrain,
+                num_rounds,
+                evals=[(dtrain, "train"), (dtest, "test")],  # Track performance
+                early_stopping_rounds=10,  # Stop if no improvement for 10 rounds
+                verbose_eval=10,  # Print progress every 10 rounds
+            )
+            model_normal_file = get_model_file(model_normal, True, "model_normal.json")
+
+            # --- 5. Evaluate the Booster ---
+            y_pred = model_normal.predict(dtest)
+            new_data = pd.DataFrame({"grade": [3], "ltv": [140]})
+            dnew = xgb.DMatrix(new_data)
+            predicted_loss_normal = model_normal.predict(dnew)
+            print(predicted_loss_normal)
+
+        # Enable_categorical = True --> supposedly may improve model performance
+        if True:
+            df["grade"] = df["grade"].astype("category")
+            dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
+            dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
+            model_categorical = xgb.train(params, dtrain, num_rounds)
+            model_categorical_file = get_model_file(
+                model_normal, True, "model_categorical.json"
+            )
+            predicted_loss_categorical = model_categorical.predict(dnew)
+            print(predicted_loss_categorical)
+
+            purified_model = purify_2D(model_categorical_file, dtrain, True)
+
+    # Synthetic data
+    N = 500
+    x2 = np.random.rand(N)
+    x1 = np.random.choice(["A", "B"], size=N)
+    y = np.where(x1 == "A", 2 * x2, x2**2)
+
+    # Prepare DataFrame
+    df = pd.DataFrame({"x1": x1, "x2": x2})
+    df["x1"] = df["x1"].astype("category")
+
+    # Build DMatrix
+    dtrain = xgb.DMatrix(df, label=y, enable_categorical=True)
+
+    # Training parameters
+    params = {"objective": "reg:squarederror", "tree_method": "hist", "max_depth": 2}
+    bst = xgb.train(params, dtrain, num_boost_round=50)
+
+    # Predict
+    y_pred = bst.predict(dtrain)
+    model_file = get_model_file(bst, True, "XXX.json")
+
+    # perplexity LOL
+    if False:
+        # Prepare data
+        df["grade"] = df["grade"].astype("category")
+        X = df[["grade", "ltv"]]
+        y = df["loss"]
+
+        # Train-test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        # Create DMatrix (with enable_categorical!) for both train and test
+        dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
+        dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
+
+        # Set parameters for regression with categorical support
+        params = {
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "enable_categorical": True,
+            "max_depth": 5,
+            "seed": 42,
+        }
+
+        # Train Booster
+        model = xgb.train(params, dtrain, num_boost_round=100)
+        model_file = get_model_file(model, True, "hello.json")
