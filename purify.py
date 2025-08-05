@@ -207,132 +207,129 @@ def get_ordered_leaves(tree, node_index, leaf_indices=None, leaf_vals=None):
     return (leaf_indices, leaf_vals)
 
 
-def get_split_conditions_2(trees):
+def get_split_conditions_not_used(trees, feature_list, dataset):
     """
     Args:
         trees (list): list of json tree (dicts) from booster
-        feature_list (list): list of all possible split_indices]
-        dataset (pandas dataframe):
+        feature_list (list): list of all possible feature names/ids (order must match column index)
+        dataset (DMatrix):
     Returns:
         dict:
-            key (int): split_index
+            key: feature name (from feature_list)
             value:
-                (numpy array) sorted numpy array of unique split conditions if split_index is NUMERICAL
-                (numpy array) sorted numpy array of unique categories (should be ints)
+                - numerical: sorted np.array of unique split thresholds
+                - categorical: integer number of unique categories seen in splits
     """
+    # ['c', 'float']
+    feature_type_list = list(dataset.feature_types)
+    feature_indices_categorical = [
+        i for i, feature_type in enumerate(feature_type_list) if feature_type == "c"
+    ]
+
+    # Sets for collecting split info
     split_dict_numerical = defaultdict(set)
     split_dict_categorical = defaultdict(set)
 
     for tree in trees:
-        cat_nodes = tree["categories_nodes"]
-        cat_nodes_set = set(tree["categories_nodes"])
-        cat_segments = tree["categories_segments"]
-        cat_sizes = tree["categories_sizes"]
-        cats = tree["categories"]
+        split_indices = tree["split_indices"]
+        split_conditions = tree["split_conditions"]
+        left = tree["left_children"]
+        right = tree["right_children"]
 
-        # numerical split conditions
-        for index in range(len(tree["left_children"])):
-            # leaf node
-            if (
-                tree["left_children"][index] == -1
-                and tree["right_children"][index] == -1
-            ):
+        # categorical split info
+        cat_nodes = tree.get("categories_nodes", [])
+        cat_segments = tree.get("categories_segments", [])
+        cat_sizes = tree.get("categories_sizes", [])
+        cats = tree.get("categories", [])
+
+        cat_nodes_set = set(cat_nodes)  # for fast lookup
+
+        # first: collect numerical split conditions
+        for i in range(len(left)):
+            # skip leaves
+            if left[i] == -1 and right[i] == -1:
                 continue
-            # categorical node
-            if index in cat_nodes_set:
+            feature_idx = split_indices[i]
+            feat_type = feature_type_list[feature_idx]
+            # categorical splits handled later
+            if i in cat_nodes_set:
                 continue
-            else:
-                split_index = tree["split_indices"][index]
-                split_condition = tree["split_conditions"][index]
-                split_dict_numerical[split_index].add(split_condition)
+            if feat_type.startswith("float"):
+                splits[feature_idx].add(split_conditions[i])
 
-        # categorical split conditions
-        # note: could probably do this with finding max category per split index then do list(range(max))
-        for i, index in enumerate(cat_nodes):
-            split_index = tree["split_indices"][index]
-            start = cat_segments[i]
-            size = cat_sizes[i]
-            for cat in cats[start : start + size]:
-                split_dict_categorical[split_index].add(cat)
+        # now handle categorical splits
+        for j, node in enumerate(cat_nodes):
+            feature_idx = split_indices[node]
+            feat_type = feature_type_list[feature_idx]
+            if feat_type.startswith("c") or feat_type.startswith("cat"):
+                start = cat_segments[j]
+                sz = cat_sizes[j]
+                for cat in cats[start : start + sz]:
+                    categories[feature_idx].add(cat)
 
-        # combine and sort dicts
-        print("split_dict_categorical", split_dict_categorical)
-        split_dict = split_dict_numerical | split_dict_categorical
-        split_dict = {
-            split_index: np.sort(np.array(list(split_condition_set)))
-            for split_index, split_condition_set in split_dict.items()
-        }
-        return split_dict
+    # build output dict
+    final = {}
+    for feat_idx in range(num_features):
+        feat_name = feature_list[feat_idx]
+        feat_type = feature_type_list[feat_idx]
+        if feat_type.startswith("float"):
+            arr = np.array(sorted(splits[feat_idx]))
+            final[feat_name] = arr
+        elif feat_type.startswith("c") or feat_type.startswith("cat"):
+            final[feat_name] = len(categories[feat_idx])
+
+    return final
 
 
 def get_split_conditions(trees, dataset):
     """
     Args:
-        trees (list): list of JSON tree dicts from XGBoost
-        dataset (pd.DataFrame): original dataframe (categorical features as 'category' dtype)
+        trees (list): list of json tree (dicts) from booster
+        feature_list (list): list of all possible feature names/ids (order must match column index)
+        dataset (DMatrix):
     Returns:
         dict:
-            key (int): split_index
-            value (np.ndarray): sorted split thresholds (numerical) OR unique categories (categorical, as ints/labels)
+            key: feature name (from feature_list)
+            value:
+                - numerical: sorted np.array of unique split thresholds
+                - categorical: sorted np.array of unique categories seen in splits
     """
+    # ['c', 'float']
+    feature_type_list = dataset.feature_types
+    split_indices_categorical = [
+        i for i, feature_type in enumerate(feature_type_list) if feature_type == "c"
+    ]
+    split_indices_categorical_set = set(split_indices_categorical)
+
+    # Sets for collecting split info
     split_dict_numerical = defaultdict(set)
     split_dict_categorical = defaultdict(set)
 
-    # Map DataFrame column index to name and vice versa
-    idx_to_col = {i: col for i, col in enumerate(dataset.columns)}
-    col_to_idx = {col: i for i, col in enumerate(dataset.columns)}
-
-    # Find which split_indices are categorical, and precompute all unique values from df
-    cat_level_lookup = {}
-    for idx, col in idx_to_col.items():
-        if pd.api.types.is_categorical_dtype(dataset[col]):
-            # int codes for categories
-            cat_level_lookup[idx] = set(dataset[col].cat.codes.unique())
-
     for tree in trees:
-        cat_nodes = tree["categories_nodes"]
-        cat_nodes_set = set(cat_nodes)
-        cat_segments = tree["categories_segments"]
-        cat_sizes = tree["categories_sizes"]
-        cats = tree["categories"]
-
-        # Numerical split conditions
-        for index in range(len(tree["left_children"])):
-            # leaf node
-            if (
-                tree["left_children"][index] == -1
-                and tree["right_children"][index] == -1
+        # numerical
+        for i in range(len(tree["left_children"])):
+            split_index = tree["split_indices"][i]
+            # skip leaf / categorical
+            if (tree["left_children"][i] == -1 and tree["right_children"][i] == -1) or (
+                split_index in split_indices_categorical_set
             ):
                 continue
-            if index in cat_nodes_set:
-                continue
-            split_index = tree["split_indices"][index]
-            split_condition = tree["split_conditions"][index]
+            split_condition = tree["split_conditions"][i]
             split_dict_numerical[split_index].add(split_condition)
 
-        # Categorical: collect categories listed in splits (left child)
-        for i, node_index in enumerate(cat_nodes):
-            split_index = tree["split_indices"][node_index]
-            start = cat_segments[i]
-            size = cat_sizes[i]
-            cats_this_node = cats[start : start + size]
-            split_dict_categorical[split_index].update(cats_this_node)
+        # categorical
+        for split_index in split_indices_categorical:
+            max_cat = int(max(get_data_col(dataset, split_index)))
+            split_dict_categorical[split_index] = list(range(max_cat + 1))
 
-    # Augment categorical dict with all levels from DataFrame (includes right-child/unseen-by-tree categories)
-    for split_index, all_cats in cat_level_lookup.items():
-        if split_index in split_dict_categorical:
-            split_dict_categorical[split_index].update(all_cats)
-        else:
-            split_dict_categorical[split_index] = set(all_cats)
+    # build output dict
+    split_dict = split_dict_numerical | split_dict_categorical
+    split_dict = {
+        split_index: np.sort(np.array(list(split_condition_set)))
+        for split_index, split_condition_set in split_dict.items()
+    }
 
-    # Combine; sort numpy arrays for output
-    final_dict = {}
-    for split_index, vals in split_dict_numerical.items():
-        final_dict[split_index] = np.sort(np.array(list(vals)))
-    for split_index, cats in split_dict_categorical.items():
-        final_dict[split_index] = np.sort(np.array(list(cats)))
-
-    return final_dict
+    return split_dict
 
 
 def get_split_indices(tree):
@@ -723,7 +720,7 @@ def tree_from_grid(grid, split_values_x, split_values_y, feature_tuple, is_categ
                         # split_values_x length = number of splits, so index at mid-1
                         split_conditions.append(float(split_values_x[mid - 1]))
 
-                    left_children.append(None)  # placeholders, fix later
+                    left_children.append(None)
                     right_children.append(None)
                     queue.append((x_lo, mid, y_lo, y_hi, cur_index))
                     queue.append((mid, x_hi, y_lo, y_hi, cur_index))
@@ -746,9 +743,9 @@ def tree_from_grid(grid, split_values_x, split_values_y, feature_tuple, is_categ
                         categories_segments.append(start)
                         categories_sizes.append(length)
                         categories_nodes.append(cur_index)
-                        split_conditions.append(1e-45)  # dummy for cat split
+                        split_conditions.append(1e-45)
                     else:
-                        split_type.append(0)  # numeric split
+                        split_type.append(0)
                         split_conditions.append(float(split_values_y[mid - 1]))
 
                     left_children.append(None)
@@ -992,7 +989,7 @@ def tree_from_vector(vector, split_condition_vector, feature_index, is_categoric
                     categories_sizes.append(len(node_cats))
                     categories_nodes.append(cur_index)
 
-                    split_conditions.append(1e-45)  # dummy value for categorical split
+                    split_conditions.append(1e-45)
                 else:
                     # Numerical split
                     split_type.append(0)
@@ -1005,7 +1002,7 @@ def tree_from_vector(vector, split_condition_vector, feature_index, is_categoric
         # Fix children references
         for (start, end), idx in node_id_map.items():
             if (end - start) == 1:
-                continue  # leaf nodes have no children
+                continue
             mid = (start + end) // 2
             left_children[idx] = node_id_map[(start, mid)]
             right_children[idx] = node_id_map[(mid, end)]
@@ -1033,104 +1030,6 @@ def tree_from_vector(vector, split_condition_vector, feature_index, is_categoric
                 "size_leaf_vector": "1",
             },
         }
-
-    if False:
-        # Initialize tree parameters
-        base_weights = []
-        left_children = []
-        right_children = []
-        split_indices = []
-        split_conditions = []
-        parents = []
-        default_left = []
-        split_type = []
-        loss_changes = []
-        sum_hessian = []
-
-        # Initialize queue with root node info: (start, end, parent_index)
-        queue = []
-        node_counter = 0
-        node_id_map = {}
-
-        queue.append((0, len(vector), -1))
-
-        # Kinda BFS
-        while queue:
-            # dequeue from front
-            start, end, parent_index = queue.pop(0)
-
-            cur_index = node_counter
-            node_counter += 1
-            node_id_map[(start, end)] = cur_index
-
-            # leaf node
-            is_leaf = False
-            if (end - start) == 1:
-                is_leaf = True
-
-            if is_leaf:
-                base_weights.append(float(vector[start]))
-                left_children.append(-1)
-                right_children.append(-1)
-                split_indices.append(0)
-                split_conditions.append(float(vector[start]))
-                parents.append(parent_index)
-                default_left.append(0)
-                split_type.append(0)
-                loss_changes.append(0.0)
-                sum_hessian.append(1.0)
-            else:
-                mid = (start + end) // 2
-                split_val = split_condition_vector[mid - 1]
-
-                base_weights.append(0.0)
-                left_children.append(None)
-                right_children.append(None)
-                split_indices.append(feature_index)
-                split_conditions.append(float(split_val))
-                parents.append(parent_index)
-                default_left.append(1)
-                split_type.append(0)
-                loss_changes.append(0.0)
-                sum_hessian.append(1.0)
-
-                # enqueue left and right children
-                queue.append((start, mid, cur_index))
-                queue.append((mid, end, cur_index))
-
-        # After all nodes are processed, fill in children indices
-        for (start, end), idx in node_id_map.items():
-            if (end - start) == 1:
-                continue  # leaf nodes, no children
-            mid = (start + end) // 2
-            left_children[idx] = node_id_map[(start, mid)]
-            right_children[idx] = node_id_map[(mid, end)]
-
-        result = {
-            "base_weights": base_weights,
-            "left_children": left_children,
-            "right_children": right_children,
-            "split_indices": split_indices,
-            "split_conditions": split_conditions,
-            "parents": parents,
-            "default_left": default_left,
-            "split_type": split_type,
-            "loss_changes": loss_changes,
-            "sum_hessian": sum_hessian,
-            "categories": [],
-            "categories_segments": [],
-            "categories_sizes": [],
-            "categories_nodes": [],
-            "id": 0,
-            "tree_param": {
-                "num_deleted": "0",
-                "num_feature": str(feature_index + 1),
-                "num_nodes": str(len(base_weights)),
-                "size_leaf_vector": "1",
-            },
-        }
-
-        return result
 
 
 ##### DEPTH-2 TREE PURIFICATION HELPER FUNCTIONS #####
@@ -1213,7 +1112,7 @@ def purify_two_features(
         feature_type_list[feature_tuple[1]] == "c",
     )
 
-    num_bins = [0, 0]  # B
+    num_bins = [0, 0]  # (B,)
     binned_indices_vectors = [None, None]  # (N, 1)
     data_cols = (
         get_data_col(dataset, feature_tuple[0]),
@@ -1223,17 +1122,10 @@ def purify_two_features(
     ##### BUILD GRIDS #####
     for i in range(2):
         split_condition_vector = split_conditions_dict[feature_tuple[i]]
-        print("split_condition_vector", split_condition_vector)
-        # Categorical --> IF THERES AN ERROR, ITS HERE WITH MY ASSUMPTION LOL
+        # Categorical
         if is_categorical[i]:
             num_bins[i] = len(split_condition_vector)
-            cat_to_bin = {cat: i for i, cat in enumerate(split_condition_vector)}
-            print("cat_to_bin", cat_to_bin)
-            print("data_cols", data_cols)
-            # hopefully {0:0, 1:1, 2:2, etc.} --> then simplify to binned_indices_vectors[i] = np.array([val for val in data_cols])
-            binned_indices_vectors[i] = np.array(
-                [cat_to_bin[val] for val in data_cols[i]]
-            )
+            binned_indices_vectors[i] = np.array([int(val) for val in data_cols[i]])
 
         # Numerical
         else:
@@ -1312,103 +1204,6 @@ def purify_two_features(
     ##### RETURN LOWER ORDER VECTORS #####
     return ((vector_x, vector_y), alpha_tree)
 
-    if False:
-        ##### BUILD GRIDS #####
-        # get unique split values --> these divide up the axes
-        split_condition_vector_x = split_conditions_dict[
-            feature_tuple[0]
-        ]  # len = Bx - 1
-        split_condition_vector_y = split_conditions_dict[
-            feature_tuple[1]
-        ]  # len = By - 1
-
-        # initialize grid_alphas to 0.0
-        num_bins_x = len(split_condition_vector_x) + 1  # Bx
-        num_bins_y = len(split_condition_vector_y) + 1  # By
-
-        grid_alphas = np.zeros((num_bins_x, num_bins_y))
-
-        # get grid_predictions (prediction values from submodel) (N, 1) --> (N,)
-        data_x_col = get_data_col(dataset, feature_tuple[0])
-        data_y_col = get_data_col(dataset, feature_tuple[1])
-
-        x_binned_indices = np.digitize(data_x_col, split_condition_vector_x)  # (N x 1)
-        y_binned_indices = np.digitize(data_y_col, split_condition_vector_y)  # (N x 1)
-
-        predictions = submodel.predict(dataset)  # (N x 1)
-
-        # initialize lower order vectors
-        vector_x = np.zeros(num_bins_x)
-        vector_y = np.zeros(num_bins_y)
-
-        ##### PURIFY ALONG EACH AXIS UNTIL CONVERGENCE #####
-        def get_mean_vector(current_vals, binned_indices, num_bins):
-            """
-            Args:
-                current_vals (N x 1) (1D numpy array): current prediction value (after subtracting corresopnding alpha) per point in dataset
-                binned_indices (Bi x 1) (1D numpy array): binned values (split values)
-                num_bins (int): number of bins
-
-            Returns:
-                1D numpy array: the mean of current_values for each unique bin index (weighted avg per bin)
-            """
-            sum_vector = np.zeros(num_bins)
-            count_vector = np.zeros(num_bins)
-            np.add.at(sum_vector, binned_indices, current_vals)
-            np.add.at(count_vector, binned_indices, 1)
-            # Avoid division by zero
-            mean_vector = np.zeros(num_bins)
-            nonzero = count_vector > 0
-            mean_vector[nonzero] = sum_vector[nonzero] / count_vector[nonzero]
-            return mean_vector
-
-        # initialize lower order vectors
-        vector_x = np.zeros(num_bins_x)
-        vector_y = np.zeros(num_bins_y)
-
-        for i in range(max_iter):
-            prev_grid_alphas = grid_alphas.copy()
-
-            # integrate over x-axis
-            current_prediction_vector = (
-                grid_alphas[x_binned_indices, y_binned_indices] + predictions
-            )
-            # ^^ (N x 1) --> Each element in vector is (the original prediction for that point using the original model, plus the correction (mean-centering) prediction from grid_alphas
-            row_means = get_mean_vector(
-                current_prediction_vector, y_binned_indices, num_bins_y
-            )
-            for j in range(num_bins_y):
-                grid_alphas[:, j] -= row_means[j]
-            vector_y += row_means
-
-            # integrate over y-axis
-            current_prediction_vector = (
-                grid_alphas[x_binned_indices, y_binned_indices] + predictions
-            )
-            col_means = get_mean_vector(
-                current_prediction_vector, x_binned_indices, num_bins_x
-            )
-            for i in range(num_bins_x):
-                grid_alphas[i, :] -= col_means[i]
-            vector_x += col_means
-
-            # convergence check --> maybe do row_means and col_means < epsilon???
-            diff = np.abs(grid_alphas - prev_grid_alphas).max()
-            if diff < epsilon:
-                # print("END EARLY")
-                break
-
-        ##### CREATE TREE #####
-        alpha_tree = tree_from_grid(
-            grid_alphas,
-            split_condition_vector_x,
-            split_condition_vector_y,
-            feature_tuple,
-        )
-
-        ##### RETURN LOWER ORDER VECTORS #####
-        return ((vector_x, vector_y), alpha_tree)
-
 
 def purify_one_feature(
     submodel,
@@ -1446,10 +1241,7 @@ def purify_one_feature(
 
     # categorical
     if is_categorical:
-        cat_to_bin = {cat: i for i, cat in enumerate(split_condition_vector)}
-        print(cat_to_bin)
-        # hopefully {0:0, 1:1, 2:2, etc.} --> then simplify to binned_indices_vectors[i] = np.array([val for val in data_cols])
-        binned_indices = np.array([cat_to_bin[val] for val in data_col])
+        binned_indices = np.array([int(val) for val in data_col])
     # numerical
     else:
         binned_indices = np.digitize(data_col, split_condition_vector)
@@ -1473,7 +1265,6 @@ def purify_one_feature(
 def purify_2D(
     model,
     dataset,
-    dataset_df,
     save_to_disk=True,
     input_file_name="original_model.json",
     output_file_name="new_model.json",
@@ -1549,7 +1340,7 @@ def purify_2D(
 
     # get bins for each feature
     split_conditions_dict = get_split_conditions(
-        tree_list_one_feature + tree_list_two_features, dataset_df
+        tree_list_one_feature + tree_list_two_features, dataset
     )
     # split_conditions_dict = get_split_conditions(updated_model, dataset)
     alpha_vectors_dict = {}
@@ -1558,6 +1349,7 @@ def purify_2D(
             num_categories = len(split_conditions_dict[feature_index])
             alpha_vectors_dict[feature_index] = np.zeros(num_categories)
         else:
+            # print(split_conditions_dict)
             num_splits = len(split_conditions_dict[feature_index])
             alpha_vectors_dict[feature_index] = np.zeros(num_splits + 1)
 
@@ -1768,10 +1560,32 @@ if __name__ == "__main__":
         # print(X)
         y = df["loss"].values
 
-        # print(get_data_col(xgb.DMatrix(df), 0))
+        # my stuff
+        df = pd.DataFrame(
+            {
+                "grade": pd.Series(grades, dtype="category"),  # or
+                # "grade": pd.Categorical(grades),
+                "ltv": ltv,
+                "loss": loss,
+            }
+        )
+        dtrain = xgb.DMatrix(
+            df[["grade", "ltv"]], label=df["loss"], enable_categorical=True
+        )
+
+        params = {
+            "objective": "reg:squarederror",
+            "tree_method": "hist",  # fast splits
+            "max_depth": 2,
+        }
+        model = xgb.train(params, dtrain, num_boost_round=50)
+
+        purified_model = purify_2D(model, dtrain)
+        print(model.predict(dtrain)[:5])
+        print(purified_model.predict(dtrain)[:5])
 
     # Synthetic data binary
-    if False:
+    if True:
         N = 500
         x2 = np.random.rand(N)
         x1 = np.random.choice(["A", "B"], size=N)
@@ -1790,18 +1604,22 @@ if __name__ == "__main__":
             "tree_method": "hist",
             "max_depth": 2,
         }
-        model = xgb.train(params, dtrain, num_boost_round=50)
+        model = xgb.train(params, dtrain, num_boost_round=1)
 
         # Predict
         y_pred = model.predict(dtrain)
-        model_file = get_model_file(model, True, "XXX.json")
+        # model_file = get_model_file(model, True, "XXX".json")
 
-        # print(model.trees_to_dataframe()[:20])
-        purify_2D(model, dtrain, True, "original_model.json", "new_model.json")
+        new_model = purify_2D(
+            model, dtrain, True, "original_model.json", "new_model.json"
+        )
+        print(model.predict(dtrain)[:10])
+        print(model.predict(dtrain)[:10])
 
-    if True:
+    # Synthetic Data multiclass
+    if False:
         # === A: Synthetic feature generation with 5 categories ===
-        N = 1000
+        N = 100
         x2 = np.random.rand(N)
         x1 = np.random.choice(list("ABCDE"), size=N)
 
@@ -1842,10 +1660,11 @@ if __name__ == "__main__":
 
         # === E: Predict & inspect ===
         y_pred = model.predict(dtrain)
+        # print(get_data_col(dtrain, 0))
         new_model = purify_2D(model, dtrain, df)
 
-        print(model.predict(dtrain)[:5])
-        print(new_model.predict(dtrain)[:5])
+        # print(model.predict(dtrain)[:5])
+        # print(new_model.predict(dtrain)[:5])
 
     # perplexity LOL
     if False:
