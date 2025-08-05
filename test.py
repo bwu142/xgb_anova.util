@@ -743,7 +743,7 @@ if __name__ == "__main__":
         "eta": 0.1,
         "verbosity": 2,
     }
-    model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
+    model = xgb.train(params, dtrain, num_boost_round=10, evals=[(dtrain, "train")])
 
     plot_pairwise(model, X, rho, b3)
     plot_marginal(model, X, rho, b1, b2, b3)
