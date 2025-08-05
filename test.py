@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from sklearn.metrics import r2_score
 import purify
 from pygam import LinearGAM, s, f
+import old as od
 
 
 ##### HELPER FUNCTIONS #####
@@ -70,7 +71,7 @@ def test_vector_to_tree(
     alpha_vector, split_condition_vector, feature_index, dataset, true_prediction
 ):
     tree_from_vector = purify.tree_from_vector(
-        alpha_vector, split_condition_vector, feature_index
+        alpha_vector, split_condition_vector, feature_index, False
     )
 
     test_model = new_model([tree_from_vector], "0.0")
@@ -84,7 +85,7 @@ def test_grid_to_tree(
     grid, split_vector_x, split_vector_y, feature_tuple, dataset, true_prediction
 ):
     tree_from_grid = purify.tree_from_grid(
-        grid, split_vector_x, split_vector_y, feature_tuple
+        grid, split_vector_x, split_vector_y, feature_tuple, (False, False)
     )
     test_model = new_model([tree_from_grid], "0.0")
 
@@ -295,9 +296,9 @@ def plot_diag(model, dataset):
 
 
 # Equal Predictions
-def test_equal_predictions(model, dataset):
+def test_equal_predictions(model, dataset, pkg):
     original_prediction = model.predict(dataset)
-    new_model = purify.purify_2D(model, dataset, True, "XYZ.json")
+    new_model = pkg.purify_2D(model, dataset, True, "XYZ.json")
     purified_prediction = new_model.predict(dataset)
     print(f"original prediction: {original_prediction[:5]}")
     print(f"purified prediction: {purified_prediction[:5]}")
@@ -340,6 +341,7 @@ def plot_pairwise(
     """
     if type(dataset) != xgb.DMatrix:
         dataset = xgb.DMatrix(dataset)
+
     # Purify model
     result = purify.fANOVA_2D(False, "gph_pair", model, dataset)
     orig_model = result.original_model
@@ -571,7 +573,7 @@ def plot_marginal(
 if __name__ == "__main__":
 
     ##### test_vector_to_tree #####
-    if False:
+    if True:
         # test 1
         X_test = np.array([[5.0], [15.0], [25.0]])
         dtest = xgb.DMatrix(X_test)
@@ -603,7 +605,7 @@ if __name__ == "__main__":
         )
 
     ##### test_grid_to_tree #####
-    if False:
+    if True:
         # test one
         split_condition_vector_x = np.array([10.0, 20.0])
         split_condition_vector_y = np.array([10.0, 30.0])
@@ -743,8 +745,10 @@ if __name__ == "__main__":
         "eta": 0.1,
         "verbosity": 2,
     }
-    model = xgb.train(params, dtrain, num_boost_round=10, evals=[(dtrain, "train")])
+    model = xgb.train(params, dtrain, num_boost_round=1000, evals=[(dtrain, "train")])
 
+    test_equal_predictions(model, dtrain, od)
+    test_equal_predictions(model, dtrain, purify)
     plot_pairwise(model, X, rho, b3)
     plot_marginal(model, X, rho, b1, b2, b3)
 
